@@ -15,19 +15,19 @@
 #  注意：腳本不含任何個人資訊，所有私人資料在執行時輸入
 # ════════════════════════════════════════════════════════════════════
 
-# ─── 安全模式說明 ────────────────────────────────────────────────
-# set -e：任何指令失敗立即停止，避免錯誤疊加
-# set -u：抓未定義變數
-# set -o pipefail：抓 pipeline 中的失敗
-# 注意：menu_is_on 全部用 if/then/fi 改寫，set -e 下安全
 set -euo pipefail
+
+# ── stdin 修正（bash <(curl ...) 模式下 stdin 被管道佔用）──────────
+# 在任何 read 之前把 stdin 重導向到終端機，讓互動式輸入正常運作
+if [[ ! -t 0 ]] && [[ -e /dev/tty ]]; then
+  exec </dev/tty
+fi
 
 
 # ════════════════════════════════════════════════════════════════════
 #  區塊 1：終端機輸出工具
 # ════════════════════════════════════════════════════════════════════
 
-# 顏色：成功=綠 / 警告=黃 / 資訊=藍 / 錯誤=紅
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
@@ -48,9 +48,18 @@ section() {
   echo -e "${BOLD}${CYAN}══════════════════════════════${NC}"
 }
 
-# 收集腳本無法自動化的步驟，最後統一顯示
 MANUAL_STEPS=()
 add_manual() { MANUAL_STEPS+=("$1"); }
+
+# ── 備份輔助：覆蓋設定檔前先建立時間戳備份 ──────────────────────────
+backup_if_exists() {
+  local file=$1
+  if [[ -f "$file" ]] && [[ -s "$file" ]]; then
+    local backup="${file}.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "$file" "$backup"
+    warn "已備份 $(basename "$file") → $backup"
+  fi
+}
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -68,8 +77,6 @@ MENU_KEYS=()
 MENU_LABELS=()
 MENU_STATE=()
 
-# 新增選單項目
-# 用法：menu_add "key" "顯示文字" [預設狀態 1|0，預設 1]
 menu_add() {
   local key=$1 label=$2 state=${3:-1}
   MENU_KEYS+=("$key")
@@ -77,8 +84,6 @@ menu_add() {
   MENU_STATE+=("$state")
 }
 
-# 查詢某個 key 是否被勾選（exit 0=是 / exit 1=否）
-# 用法：if menu_is_on "key"; then ...; fi
 menu_is_on() {
   local target=$1 i
   for i in "${!MENU_KEYS[@]}"; do
@@ -89,7 +94,6 @@ menu_is_on() {
   return 1
 }
 
-# 顯示互動選單，使用者按 Enter 確認後離開
 menu_run() {
   local title=$1
   local display_num count key label state num i input
@@ -101,7 +105,6 @@ menu_run() {
     echo -e "  ${DIM}數字鍵切換勾選 · 空格分隔多選（例：1 3 5）· A=全選 · N=全不選 · Enter=確認${NC}"
     echo
 
-    # 顯示所有項目（標題不編號，普通項目用獨立計數器避免跳號）
     display_num=0
     for i in "${!MENU_KEYS[@]}"; do
       key="${MENU_KEYS[$i]}"
@@ -129,7 +132,6 @@ menu_run() {
         break
         ;;
       [Aa])
-        # 全選：所有非標題項目設為勾選
         for i in "${!MENU_KEYS[@]}"; do
           if [[ "${MENU_KEYS[$i]}" != __SECTION__* ]]; then
             MENU_STATE[$i]=1
@@ -137,7 +139,6 @@ menu_run() {
         done
         ;;
       [Nn])
-        # 全不選
         for i in "${!MENU_KEYS[@]}"; do
           if [[ "${MENU_KEYS[$i]}" != __SECTION__* ]]; then
             MENU_STATE[$i]=0
@@ -145,7 +146,6 @@ menu_run() {
         done
         ;;
       *)
-        # 數字輸入：根據顯示編號（非陣列索引）找到對應項目切換
         for num in $input; do
           if ! [[ "$num" =~ ^[0-9]+$ ]] || [[ "$num" -le 0 ]]; then
             continue
@@ -174,15 +174,6 @@ menu_run() {
 
 # ════════════════════════════════════════════════════════════════════
 #  區塊 3：套件安裝輔助函數
-#
-#  brew_pkg()  安裝 CLI 工具（formula）
-#  brew_cask() 安裝圖形介面 App（cask）
-#
-#  設計：
-#  - 先檢查是否已安裝，避免重複動作
-#  - 用 if/else 而非 &&...|| 避免邏輯炸彈
-#  - 永遠 return 0，避免函數失敗中止後續流程
-#  - 保留 stdout 讓使用者看到下載進度（大套件可能要好幾分鐘）
 # ════════════════════════════════════════════════════════════════════
 
 brew_pkg() {
@@ -219,17 +210,60 @@ brew_cask() {
 # ════════════════════════════════════════════════════════════════════
 #  區塊 4：Dock 圖示輔助函數
 #
-#  - 全域定義（不在 if 區塊內），讓套件安裝後仍可呼叫
-#  - 只有 App 路徑實際存在才加入，避免空白圖示
-#  - XML 必須在同一行，避免換行造成 plist 格式錯誤
+#  使用 python3 plistlib 直接操作 binary plist，確保資料型別正確
+#  （defaults write -array-add 傳入 XML 字串會將 dict 存成 String 型別，
+#  導致 Dock 讀取設定失敗；plistlib 寫入的型別與 Dock 期望的完全一致）
+#
+#  同時解決路徑含 & 字元的 XML 跳脫問題
 # ════════════════════════════════════════════════════════════════════
+
+DOCK_PLIST="$HOME/Library/Preferences/com.apple.dock.plist"
 
 add_dock_app() {
   local app_path=$1
-  if [ ! -e "$app_path" ]; then
-    return 0
-  fi
-  defaults write com.apple.dock persistent-apps -array-add "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$app_path</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
+  [[ -e "$app_path" ]] || return 0
+  python3 - "$app_path" <<'PYTHON'
+import sys, plistlib
+from pathlib import Path
+
+plist = Path.home() / "Library/Preferences/com.apple.dock.plist"
+app  = sys.argv[1]
+name = app.rsplit("/", 1)[-1].removesuffix(".app")
+
+with open(plist, "rb") as f:
+    data = plistlib.load(f)
+
+entry = {
+    "tile-type": "file-tile",
+    "tile-data": {
+        "file-data": {
+            "_CFURLString": app,
+            "_CFURLStringType": 0,
+        },
+        "file-label": name,
+        "file-type": 32,
+    },
+}
+data.setdefault("persistent-apps", []).append(entry)
+
+with open(plist, "wb") as f:
+    plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+PYTHON
+}
+
+# Dock 清空（在套件安裝後重新排列前呼叫）
+dock_reset() {
+  python3 - <<'PYTHON'
+import plistlib
+from pathlib import Path
+
+plist = Path.home() / "Library/Preferences/com.apple.dock.plist"
+with open(plist, "rb") as f:
+    data = plistlib.load(f)
+data["persistent-apps"] = []
+with open(plist, "wb") as f:
+    plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+PYTHON
 }
 
 
@@ -257,15 +291,12 @@ case "$APPEARANCE_INPUT" in
   *)    APPEARANCE="light" ;;
 esac
 
-# ── 電腦名稱（只有唯一管理員才詢問）──
-# 判斷 1：目前帳號是否在 admin 群組
+# 判斷是否為唯一管理員，決定是否詢問電腦名稱
 IS_ADMIN=false
 if groups | grep -q "admin"; then
   IS_ADMIN=true
 fi
 
-# 判斷 2：目前帳號是否是唯一管理員
-# 注意：用 || echo 0 保護整個 pipeline，避免 pipefail+set -e 下因 dscl 失敗而中止
 ADMIN_COUNT=$(dscl . -read /Groups/admin GroupMembership 2>/dev/null \
   | tr ' ' '\n' \
   | grep -v "^GroupMembership:" \
@@ -278,9 +309,8 @@ if [ "$ADMIN_COUNT" = "1" ]; then
   IS_ONLY_ADMIN=true
 fi
 
-# 兩個條件都成立才詢問電腦名稱
-COMPUTER_DISPLAY_NAME=""   # Finder / Find My 顯示（可有空格，例如 Philip's M4）
-COMPUTER_NETWORK_NAME=""   # 終端機 / 網路用（不可有空格，例如 philip-m4）
+COMPUTER_DISPLAY_NAME=""
+COMPUTER_NETWORK_NAME=""
 
 if [ "$IS_ADMIN" = "true" ] && [ "$IS_ONLY_ADMIN" = "true" ]; then
   echo
@@ -297,7 +327,6 @@ echo -e "  ${BOLD}Git 設定${NC}（留空則跳過）"
 read -rp "  Git user.name: " GIT_NAME
 read -rp "  Git email: " GIT_EMAIL
 
-# 確認摘要
 echo
 echo -e "  確認："
 echo -e "  名稱：${BOLD}$USER_DISPLAY_NAME${NC}"
@@ -326,7 +355,6 @@ fi
 #  區塊 6：建立選單
 # ════════════════════════════════════════════════════════════════════
 
-# ── 系統設定 ──
 menu_add "__SECTION__系統設定" ""
 menu_add "sys_lang"            "語言：繁中 > 英文 + UTF-8"
 menu_add "sys_keyrepeat"       "按鍵速度（75% 快）"
@@ -348,20 +376,16 @@ menu_add "sys_autoupdate"      "macOS 自動更新"
 menu_add "sys_firewall"        "防火牆開啟"
 menu_add "sys_filevault"       "FileVault 磁碟加密"
 
-# ── 瀏覽器 ── (Safari 是內建，自動加入 Dock)
 menu_add "__SECTION__瀏覽器" ""
 menu_add "app_chrome"     "Google Chrome"
 menu_add "app_brave"      "Brave"
 
-# ── 密碼 / 安全 ──
 menu_add "__SECTION__密碼 / 安全" ""
 menu_add "app_1password"  "1Password"
 
-# ── 音樂 ──
 menu_add "__SECTION__音樂" ""
 menu_add "app_spotify"    "Spotify"
 
-# ── 生產力 ──
 menu_add "__SECTION__生產力" ""
 menu_add "app_rectangle"      "Rectangle（視窗管理）"
 menu_add "app_raycast"        "Raycast（啟動器，取代 Spotlight）"
@@ -370,26 +394,21 @@ menu_add "app_pearcleaner"    "Pearcleaner（App 完整移除）"
 menu_add "app_monitorcontrol" "MonitorControl（外接螢幕亮度）"
 menu_add "app_obsidian"       "Obsidian（知識庫）"
 
-# ── 滑鼠 ──
 menu_add "__SECTION__滑鼠" ""
 menu_add "app_logitech"   "Logi Options+"
 
-# ── 輸入法 ──
 menu_add "__SECTION__輸入法" ""
 menu_add "app_rime"       "鼠鬚管（Squirrel）+ 嗯蝦米"
 
-# ── Terminal ──
 menu_add "__SECTION__Terminal" ""
 menu_add "app_ghostty"    "Ghostty（JetBrains Mono Nerd Font + Solarized Dark）"
 menu_add "dev_ohmyzsh"    "Oh My Zsh + Plugins"
 menu_add "dev_starship"   "Starship Prompt（Solarized Dark 風格）"
 menu_add "dev_vim"        "Vim + vim-plug + Solarized Dark"
 
-# ── 編輯器 ──
 menu_add "__SECTION__編輯器" ""
 menu_add "app_vscode"     "VS Code + settings.json + 擴充功能"
 
-# ── 開發環境 ──
 menu_add "__SECTION__開發環境" ""
 menu_add "dev_python"          "pyenv + pyenv-virtualenv（Python 最新穩定版）"
 menu_add "dev_node"            "nvm（Node 24 LTS）+ pnpm"
@@ -407,7 +426,8 @@ clear
 echo
 echo -e "${BOLD}  安裝清單確認${NC}"
 echo
-echo -e "  使用者：${BOLD}$USER_DISPLAY_NAME${NC}  電腦名稱：${BOLD}$COMPUTER_NAME${NC}"
+# 修正：原本誤用未定義的 $COMPUTER_NAME，應為 $COMPUTER_DISPLAY_NAME
+echo -e "  使用者：${BOLD}$USER_DISPLAY_NAME${NC}  電腦名稱：${BOLD}$COMPUTER_DISPLAY_NAME${NC}"
 if [ "$APPEARANCE" = "light" ]; then
   echo -e "  外觀：淺色"
 else
@@ -431,6 +451,13 @@ if [[ ! "$FINAL_CONFIRM" =~ ^[Yy]$ ]]; then
   exit 0
 fi
 
+# ── sudo 鎖定（確認後立即取得，並在背景保持存活）─────────────────────
+# 長腳本安裝期間 sudo 可能過期，用背景 loop 每 60 秒刷新 token
+sudo -v || fail "需要管理員密碼才能繼續"
+while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+SUDO_KEEPALIVE_PID=$!
+trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null' EXIT INT TERM
+
 
 # ════════════════════════════════════════════════════════════════════
 #  區塊 8：系統環境確認
@@ -450,10 +477,6 @@ if [[ "$MACOS_VERSION" != 15.* ]] && [[ "$MACOS_VERSION" != 16.* ]]; then
   warn "建議使用 macOS Tahoe (15+)，目前版本 $MACOS_VERSION"
 fi
 
-# 設定電腦名稱（只有唯一管理員才執行）
-# ComputerName  = Finder / Find My 顯示名稱（可含空格）
-# HostName      = 終端機 prompt 顯示的名稱
-# LocalHostName = 區域網路 .local 名稱（不可含空格）
 if [ -n "$COMPUTER_DISPLAY_NAME" ] && [ -n "$COMPUTER_NETWORK_NAME" ]; then
   sudo scutil --set ComputerName  "$COMPUTER_DISPLAY_NAME"
   sudo scutil --set HostName      "$COMPUTER_NETWORK_NAME"
@@ -465,7 +488,6 @@ fi
 
 # ════════════════════════════════════════════════════════════════════
 #  區塊 9：Xcode Command Line Tools
-#  Homebrew 和 git 都依賴 CLT，必須最先安裝
 # ════════════════════════════════════════════════════════════════════
 
 section "Xcode Command Line Tools"
@@ -475,17 +497,13 @@ if xcode-select -p &>/dev/null; then
 else
   info "安裝 Xcode Command Line Tools..."
   xcode-select --install 2>/dev/null || true
-  warn "請在跳出的視窗點擊「安裝」，完成後再回來繼續..."
-  warn "若是一行安裝模式（bash <(curl ...)）stdin 被佔用，請改用 bash setup.sh"
+  warn "請在跳出的視窗點擊「安裝」，完成後按 Enter 繼續..."
   read -r || true
 fi
 
 
 # ════════════════════════════════════════════════════════════════════
 #  區塊 10：Homebrew
-#
-#  Apple Silicon 安裝路徑：/opt/homebrew
-#  使用 NONINTERACTIVE=1 避免互動提示卡住一行安裝模式
 # ════════════════════════════════════════════════════════════════════
 
 section "Homebrew"
@@ -497,8 +515,6 @@ else
   info "安裝 Homebrew（可能需要幾分鐘）..."
   NONINTERACTIVE=1 /bin/bash -c \
     "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-  # 把 Homebrew 加進 PATH（Apple Silicon 路徑）
   echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> "$HOME/.zprofile"
   eval "$(/opt/homebrew/bin/brew shellenv)"
   log "Homebrew 安裝完成"
@@ -520,19 +536,15 @@ else
   log "淺色模式"
 fi
 
-# ── 語言：繁中第一、英文第二 ──
+# ── 語言 ──
 if menu_is_on "sys_lang"; then
   defaults write NSGlobalDomain AppleLanguages -array "zh-Hant" "en"
   defaults write NSGlobalDomain AppleLocale -string "zh_TW"
-  # zh@collation=stroke：中文按筆畫排序（台灣慣用）
   defaults write NSGlobalDomain AppleCollationOrder -string "zh@collation=stroke"
   log "語言：繁體中文 > 英文"
 fi
 
 # ── 按鍵速度 ──
-# KeyRepeat=2 是按住時的重複速度（越小越快，最小 1）
-# InitialKeyRepeat=25 是按住多久後開始重複（越小延遲越短）
-# 此組合等同系統設定中的 75% 快
 if menu_is_on "sys_keyrepeat"; then
   defaults write NSGlobalDomain KeyRepeat -int 2
   defaults write NSGlobalDomain InitialKeyRepeat -int 25
@@ -540,14 +552,12 @@ if menu_is_on "sys_keyrepeat"; then
 fi
 
 # ── 關閉自然捲動 ──
-# false = 傳統方向（手指向下，畫面向下）
 if menu_is_on "sys_scroll"; then
   defaults write NSGlobalDomain com.apple.swipescrolldirection -bool false
   log "自然捲動已關閉"
 fi
 
 # ── 觸控板：點一下來選按 ──
-# 必須同時設定 BT 和有線觸控板，再加上全域 tapBehavior
 if menu_is_on "sys_trackpad"; then
   defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad Clicking -bool true
   defaults write com.apple.AppleMultitouchTrackpad Clicking -bool true
@@ -560,17 +570,15 @@ fi
 if menu_is_on "sys_dock"; then
   defaults write com.apple.dock orientation             -string "bottom"
   defaults write com.apple.dock autohide                -bool   true
-  defaults write com.apple.dock autohide-delay          -float  0      # 移到邊緣立即顯示
-  defaults write com.apple.dock autohide-time-modifier  -float  0.3    # 動畫速度
-  defaults write com.apple.dock show-recents            -bool   false  # 不顯示最近 App
-  defaults write com.apple.dock mineffect               -string "scale" # 縮放比 genie 快
+  defaults write com.apple.dock autohide-delay          -float  0
+  defaults write com.apple.dock autohide-time-modifier  -float  0.3
+  defaults write com.apple.dock show-recents            -bool   false
+  defaults write com.apple.dock mineffect               -string "scale"
   defaults write com.apple.dock minimize-to-application -bool   false
   log "Dock 外觀完成（圖示稍後設定）"
 fi
 
 # ── 螢幕保護 + 睡眠密碼 ──
-# idleTime 1200 秒 = 20 分鐘
-# askForPasswordDelay 0 = 立即要求密碼
 if menu_is_on "sys_screensaver"; then
   defaults write com.apple.screensaver idleTime -int 1200
   defaults -currentHost write com.apple.screensaver idleTime -int 1200
@@ -580,21 +588,20 @@ if menu_is_on "sys_screensaver"; then
 fi
 
 # ── 熱角 ──
-# 數值對應：2=指揮中心 / 3=應用程式視窗 / 4=桌面 / 5=螢幕保護
-# modifier=0 = 不需按住任何修飾鍵
+# 2=指揮中心 / 3=應用程式視窗 / 4=桌面 / 5=螢幕保護
 if menu_is_on "sys_hotcorner"; then
-  defaults write com.apple.dock wvous-tl-corner -int 5  # 左上：螢幕保護
+  defaults write com.apple.dock wvous-tl-corner -int 5
   defaults write com.apple.dock wvous-tl-modifier -int 0
-  defaults write com.apple.dock wvous-tr-corner -int 4  # 右上：桌面
+  defaults write com.apple.dock wvous-tr-corner -int 4
   defaults write com.apple.dock wvous-tr-modifier -int 0
-  defaults write com.apple.dock wvous-bl-corner -int 3  # 左下：應用程式視窗
+  defaults write com.apple.dock wvous-bl-corner -int 3
   defaults write com.apple.dock wvous-bl-modifier -int 0
-  defaults write com.apple.dock wvous-br-corner -int 2  # 右下：指揮中心
+  defaults write com.apple.dock wvous-br-corner -int 2
   defaults write com.apple.dock wvous-br-modifier -int 0
   log "熱角設定完成"
 fi
 
-# ── 截圖：存到 ~/Desktop/Screenshots，PNG，無陰影 ──
+# ── 截圖 ──
 if menu_is_on "sys_screenshot"; then
   SCREENSHOT_DIR="$HOME/Desktop/Screenshots"
   mkdir -p "$SCREENSHOT_DIR"
@@ -605,28 +612,24 @@ if menu_is_on "sys_screenshot"; then
   log "截圖：~/Desktop/Screenshots（無陰影）"
 fi
 
-# ── Finder 顯示 ──
+# ── Finder ──
 if menu_is_on "sys_finder"; then
   defaults write com.apple.finder ShowPathbar              -bool   true
   defaults write com.apple.finder ShowStatusBar            -bool   true
   defaults write NSGlobalDomain   AppleShowAllExtensions   -bool   true
-  defaults write com.apple.finder FXPreferredViewStyle     -string "Nlsv"  # List 檢視
-  defaults write com.apple.finder FXDefaultSearchScope     -string "SCcf"  # 搜尋當前資料夾
+  defaults write com.apple.finder FXPreferredViewStyle     -string "Nlsv"
+  defaults write com.apple.finder FXDefaultSearchScope     -string "SCcf"
   defaults write com.apple.finder _FXShowPosixPathInTitle  -bool   true
   defaults write com.apple.finder FXEnableExtensionChangeWarning -bool false
   defaults write com.apple.finder ShowRecentTags           -bool   false
-
-  # 新視窗預設開 Home 目錄
   defaults write com.apple.finder NewWindowTarget          -string "PfHm"
   defaults write com.apple.finder NewWindowTargetPath      -string "file://$HOME/"
-
   killall Finder 2>/dev/null || true
   log "Finder 設定完成"
   add_manual "Finder → 設定 → 側邊欄，手動勾選需要顯示的項目（iCloud Drive、AirDrop、外接硬碟等）"
 fi
 
-# ── 選單列：藍芽 + 音量 + 電池（自動偵測有無電池）──
-# 電池偵測：用 pmset 看 InternalBattery（比 system_profiler 可靠，不誤判）
+# ── 選單列 ──
 if menu_is_on "sys_menubar"; then
   defaults write com.apple.controlcenter "NSStatusItem Visible Bluetooth" -bool true
   defaults write com.apple.controlcenter "NSStatusItem Visible Sound"     -bool true
@@ -642,7 +645,6 @@ if menu_is_on "sys_menubar"; then
 fi
 
 # ── 桌面：素色岩石色 ──
-# macOS Tahoe 已棄用 desktoppicture.db，改用 osascript 設定
 if menu_is_on "sys_wallpaper"; then
   osascript <<'APPLESCRIPT' 2>/dev/null || true
 tell application "System Events"
@@ -656,11 +658,6 @@ APPLESCRIPT
 fi
 
 # ── 外接鍵盤 Command ↔ Option 互換 ──
-# 透過 hidutil 設定 HID 層按鍵對應，LaunchAgent 確保開機自動套用
-#
-# HID Usage Code 對照：
-#   0x7000000E2 = Left Option   ←→  0x7000000E3 = Left Command
-#   0x7000000E6 = Right Option  ←→  0x7000000E7 = Right Command
 if menu_is_on "sys_keyboard_remap"; then
   LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
   mkdir -p "$LAUNCH_AGENT_DIR"
@@ -693,7 +690,6 @@ if menu_is_on "sys_keyboard_remap"; then
 </plist>
 PLIST
 
-  # macOS 13+ 推薦用 bootstrap，舊版用 load
   launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENT_DIR/com.user.keyboard-remap.plist" 2>/dev/null \
     || launchctl load "$LAUNCH_AGENT_DIR/com.user.keyboard-remap.plist" 2>/dev/null \
     || true
@@ -702,7 +698,6 @@ PLIST
 fi
 
 # ── Spotlight 停用，輸入法切換改 Command+Space ──
-# AppleSymbolicHotKeys：64=Spotlight, 60=輸入法切換
 if menu_is_on "sys_spotlight"; then
   defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 64 \
     '<dict><key>enabled</key><false/><key>value</key><dict><key>parameters</key><array><integer>65535</integer><integer>49</integer><integer>1048576</integer></array><key>type</key><string>standard</string></dict></dict>'
@@ -719,7 +714,7 @@ if menu_is_on "sys_mirror"; then
   log "顯示器：鏡象輸出選項已關閉"
 fi
 
-# ── 不在網路/外接磁碟產生 .DS_Store ──
+# ── .DS_Store 不寫入網路/外接磁碟 ──
 if menu_is_on "sys_ds_store"; then
   defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool true
   defaults write com.apple.desktopservices DSDontWriteUSBStores     -bool true
@@ -727,19 +722,27 @@ if menu_is_on "sys_ds_store"; then
 fi
 
 # ── 時區 ──
+# macOS Tahoe 在終端機未具備全磁碟存取權限（FDA）時 systemsetup 會失敗
+# 嘗試 systemsetup，失敗則透過 launchd 設定並通知手動補完
 if menu_is_on "sys_timezone"; then
-  sudo systemsetup -settimezone "Asia/Taipei" 2>/dev/null || true
-  sudo systemsetup -setusingnetworktime on    2>/dev/null || true
-  log "時區：台北，網路自動同步"
+  if sudo systemsetup -settimezone "Asia/Taipei" 2>/dev/null; then
+    sudo systemsetup -setusingnetworktime on 2>/dev/null || true
+    log "時區：台北，網路自動同步"
+  else
+    warn "systemsetup 失敗（macOS Tahoe 需要全磁碟存取權限）"
+    warn "嘗試備選方式設定時區..."
+    sudo /usr/sbin/systemsetup -settimezone "Asia/Taipei" 2>/dev/null || true
+    add_manual "若時區不正確：系統設定 → 一般 → 日期與時間 → 時區設為「台北」"
+  fi
 fi
 
 # ── macOS 自動更新 ──
 if menu_is_on "sys_autoupdate"; then
-  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled              -bool true
-  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload                  -bool true
-  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates   -bool true
-  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall              -bool true
-  sudo defaults write /Library/Preferences/com.apple.commerce       AutoUpdate                         -bool true
+  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled            -bool true
+  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload                -bool true
+  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool true
+  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall            -bool true
+  sudo defaults write /Library/Preferences/com.apple.commerce       AutoUpdate                       -bool true
   log "macOS 自動更新已開啟"
 fi
 
@@ -750,8 +753,7 @@ if menu_is_on "sys_firewall"; then
   log "防火牆已開啟（含隱身模式）"
 fi
 
-# ── FileVault：全磁碟加密 ──
-# 注意：fdesetup 失敗用 || true 避免 pipefail 中止
+# ── FileVault ──
 if menu_is_on "sys_filevault"; then
   FV_STATUS=$(fdesetup status 2>/dev/null || echo "unknown")
   if echo "$FV_STATUS" | grep -q "FileVault is On"; then
@@ -782,7 +784,7 @@ if menu_is_on "app_chrome";        then brew_cask "google-chrome";    fi
 if menu_is_on "app_brave";         then brew_cask "brave-browser";    fi
 if menu_is_on "app_1password"; then
   brew_cask "1password"
-  brew_cask "1password-cli"   # op 指令，Oh My Zsh 1password plugin 和終端機整合需要
+  brew_cask "1password-cli"
 fi
 if menu_is_on "app_spotify";       then brew_cask "spotify";          fi
 if menu_is_on "app_rectangle";     then brew_cask "rectangle";        fi
@@ -792,11 +794,17 @@ if menu_is_on "app_pearcleaner";   then brew_cask "pearcleaner";      fi
 if menu_is_on "app_monitorcontrol";then brew_cask "monitorcontrol";   fi
 if menu_is_on "app_obsidian";      then brew_cask "obsidian";         fi
 if menu_is_on "app_logitech";      then brew_cask "logi-options+";    fi
-if menu_is_on "app_vscode";        then brew_cask "visual-studio-code"; fi
+
+if menu_is_on "app_vscode"; then
+  brew_cask "visual-studio-code"
+  # 安裝後立即把 VS Code 的 CLI bin 加入當前 session 的 PATH，
+  # 避免「冷啟動」問題（新安裝的 code 指令因 PATH 快取而無法立即呼叫）
+  export PATH="$PATH:/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
+  hash -r 2>/dev/null || true
+fi
 
 if menu_is_on "app_ghostty"; then
   brew_cask "ghostty"
-  # Nerd Font 已在 Homebrew 主 tap，不需要 homebrew/cask-fonts（已棄用）
   brew_cask "font-jetbrains-mono-nerd-font"
 fi
 
@@ -804,13 +812,12 @@ fi
 # ════════════════════════════════════════════════════════════════════
 #  區塊 13：Dock 圖示順序（必須在套件安裝後執行）
 #
-#  Dock 順序：Finder · Safari · Chrome · Brave · Spotify
-#             Ghostty · VS Code · Obsidian · 系統設定
+#  使用區塊 4 的 python3/plistlib 方案，確保 tile-data 以
+#  Dictionary 型別寫入，不會因 XML 字串型別導致設定失效
 # ════════════════════════════════════════════════════════════════════
 
 if menu_is_on "sys_dock"; then
-  # 清空 Dock，重新排列
-  defaults write com.apple.dock persistent-apps -array
+  dock_reset
 
   add_dock_app "/System/Library/CoreServices/Finder.app"
   add_dock_app "/Applications/Safari.app"
@@ -820,7 +827,6 @@ if menu_is_on "sys_dock"; then
   add_dock_app "/Applications/Ghostty.app"
   add_dock_app "/Applications/Visual Studio Code.app"
   add_dock_app "/Applications/Obsidian.app"
-  # Ventura+ 是 System Settings，舊版是 System Preferences
   add_dock_app "/System/Applications/System Settings.app"
   add_dock_app "/System/Applications/System Preferences.app"
 
@@ -831,9 +837,6 @@ fi
 
 # ════════════════════════════════════════════════════════════════════
 #  區塊 14：輸入法（鼠鬚管 + 嗯蝦米）
-#
-#  鼠鬚管 = Rime 輸入法的 macOS 版本
-#  嗯蝦米 = 倚天/無蝦米的開源相容方案（liur）
 # ════════════════════════════════════════════════════════════════════
 
 section "輸入法"
@@ -843,7 +846,6 @@ if menu_is_on "app_rime"; then
   RIME_DIR="$HOME/Library/Rime"
   mkdir -p "$RIME_DIR"
 
-  # 嗯蝦米方案不存在才安裝（避免覆蓋現有設定）
   if [ -f "$RIME_DIR/liur.schema.yaml" ]; then
     log "嗯蝦米已存在"
   else
@@ -856,7 +858,6 @@ if menu_is_on "app_rime"; then
     fi
   fi
 
-  # 設定預設輸入方案為嗯蝦米，切換熱鍵 Ctrl+`
   cat >"$RIME_DIR/default.custom.yaml" <<'RIME'
 patch:
   schema_list:
@@ -873,12 +874,17 @@ fi
 
 # ════════════════════════════════════════════════════════════════════
 #  區塊 15：Ghostty 設定
+#
+#  用 install -d 建立設定目錄（明確指定 755 權限），
+#  避免父目錄非當前使用者所有時 mkdir 預設寫入失敗
 # ════════════════════════════════════════════════════════════════════
 
 section "Ghostty"
 
 if menu_is_on "app_ghostty"; then
-  mkdir -p "$HOME/.config/ghostty"
+  install -d -m 755 "$HOME/.config"
+  install -d -m 755 "$HOME/.config/ghostty"
+
   cat >"$HOME/.config/ghostty/config" <<'GHOSTTY'
 # ── 外觀 ───────────────────────────────────────────
 theme              = "Solarized Dark"
@@ -905,16 +911,18 @@ fi
 # ════════════════════════════════════════════════════════════════════
 #  區塊 16：Oh My Zsh + Plugins
 #
-#  注意事項：
-#  - ZSH_THEME=""：由 Starship 接手 prompt，不用 OMZ theme
-#  - 移除 1password plugin（需要 op CLI，未裝）
-#  - NVM_DIR 必須在 source omz 之前 export，否則 nvm plugin 載入失敗
+#  設計決策：
+#  - nvm plugin 從 plugins 列表移除：.zshrc 已手動 source nvm.sh，
+#    保留 plugin 會造成雙重載入（plugin 用 lazy-load，手動用即載）
+#  - 1password plugin 只在安裝 1password-cli 時才加入
+#  - 刪除與 OMZ git plugin 重複的 git aliases（gs ga gc gp gl gd gb gco glog）
+#    OMZ git plugin 已內建這些 aliases（部分行為略有差異），重複定義造成
+#    設定檔噪音或覆蓋掉 OMZ 較完整的版本
 # ════════════════════════════════════════════════════════════════════
 
 section "Oh My Zsh"
 
 if menu_is_on "dev_ohmyzsh"; then
-  # 安裝 Oh My Zsh 本體
   if [ -d "$HOME/.oh-my-zsh" ]; then
     log "Oh My Zsh 已安裝"
   else
@@ -927,7 +935,6 @@ if menu_is_on "dev_ohmyzsh"; then
     fi
   fi
 
-  # 安裝第三方 plugin（先檢查再 clone，避免重複）
   ZSH_CUSTOM_DIR="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
 
   zsh_plugin() {
@@ -950,30 +957,39 @@ if menu_is_on "dev_ohmyzsh"; then
   zsh_plugin "zsh-autocomplete"        "marlonrichert/zsh-autocomplete"
   zsh_plugin "you-should-use"          "MichaelAquilina/zsh-you-should-use"
 
-  # 寫入 .zshrc（用單引號 heredoc，內容不展開變數）
-  cat >"$HOME/.zshrc" <<'ZSHRC'
-# ════════════════════════════════════════════════════
-#  .zshrc — 由 setup.sh 自動產生
-# ════════════════════════════════════════════════════
+  # 備份現有 .zshrc（避免破壞性覆蓋使用者既有設定）
+  backup_if_exists "$HOME/.zshrc"
 
-# ── nvm 環境（必須在 source omz 之前 export，
-#    否則 omz 的 nvm plugin 載入時找不到 nvm）─────────
+  # ── 動態決定 plugins 列表（1password plugin 需要 op CLI）──────────
+  # 因 heredoc 用 <<'ZSHRC'（防止展開），plugins 需分段寫入
+  cat >"$HOME/.zshrc" <<'ZSHRC_HEAD'
+# ════════════════════════════════════════════════
+#  .zshrc — 由 setup.sh 自動產生
+# ════════════════════════════════════════════════
+
+# ── nvm 環境（必須在 source omz 之前 export）────
 export NVM_DIR="$HOME/.nvm"
 
-# ── Oh My Zsh ──────────────────────────────────────
+# ── Oh My Zsh ──────────────────────────────────
 export ZSH="$HOME/.oh-my-zsh"
-ZSH_THEME=""                       # 由 Starship 負責 prompt
+ZSH_THEME=""                    # 由 Starship 負責 prompt
 DISABLE_AUTO_UPDATE="true"
 DISABLE_MAGIC_FUNCTIONS="true"
 
-# 注意：1password plugin 需要 op CLI，已隨 1password-cli 一起安裝
 plugins=(
   git
   macos
   history
   colored-man-pages
-  1password
-  nvm
+ZSHRC_HEAD
+
+  # 1password plugin 只有安裝 1password-cli 才加入，避免 op 不存在時啟動報錯
+  if menu_is_on "app_1password"; then
+    echo "  1password" >> "$HOME/.zshrc"
+  fi
+
+  # nvm 省略：.zshrc 下方已手動 source，加入 plugin 會雙重載入
+  cat >>"$HOME/.zshrc" <<'ZSHRC_PLUGINS'
   zsh-autosuggestions
   zsh-syntax-highlighting
   you-should-use
@@ -982,16 +998,15 @@ plugins=(
 
 source $ZSH/oh-my-zsh.sh
 
-# ── Homebrew ───────────────────────────────────────
+# ── Homebrew ────────────────────────────────────
 eval "$(/opt/homebrew/bin/brew shellenv)"
 
-# ── Starship Prompt ────────────────────────────────
+# ── Starship Prompt ─────────────────────────────
 if command -v starship &>/dev/null; then
   eval "$(starship init zsh)"
 fi
 
-# ── pyenv ──────────────────────────────────────────
-# 先設好 PATH，再用 PATH 找 pyenv
+# ── pyenv ───────────────────────────────────────
 export PYENV_ROOT="$HOME/.pyenv"
 export PATH="$PYENV_ROOT/bin:$PATH"
 if command -v pyenv &>/dev/null; then
@@ -1000,26 +1015,25 @@ if command -v pyenv &>/dev/null; then
   eval "$(pyenv virtualenv-init -)"
 fi
 
-# ── nvm 載入 ───────────────────────────────────────
+# ── nvm（手動載入，不使用 OMZ nvm plugin 避免雙重初始化）──
 [ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && \. "/opt/homebrew/opt/nvm/nvm.sh"
 [ -s "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm" ] && \
   \. "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm"
 
-# ── 1Password SSH Agent ────────────────────────────
-# 所有 SSH 連線（含 git）透過 1Password 驗證
+# ── 1Password SSH Agent ─────────────────────────
 export SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 
-# ── 語言環境 ───────────────────────────────────────
+# ── 語言環境 ────────────────────────────────────
 export LANG=zh_TW.UTF-8
 export LC_ALL=zh_TW.UTF-8
 export LC_CTYPE=zh_TW.UTF-8
 
-# ── Editor ─────────────────────────────────────────
+# ── Editor ──────────────────────────────────────
 export GIT_EDITOR=vim
 export EDITOR=vim
 export VISUAL=vim
 
-# ── Aliases ────────────────────────────────────────
+# ── Aliases ─────────────────────────────────────
 alias ll='ls -lah'
 alias la='ls -A'
 alias l='ls -CF'
@@ -1035,21 +1049,13 @@ alias du='du -h'
 alias ports='lsof -iTCP -sTCP:LISTEN -P'
 alias myip='curl -s https://api.ipify.org'
 
-# ── Git Aliases ────────────────────────────────────
-alias gs='git status'
-alias ga='git add'
-alias gc='git commit'
-alias gp='git push'
-alias gl='git pull'
-alias glog='git log --oneline --graph --decorate'
-alias gd='git diff'
-alias gb='git branch'
-alias gco='git checkout'
+# ── Git aliases 已由 OMZ git plugin 提供，不重複定義 ──
+# （ga gst gc gp gl gd gb gco glog 等皆由 git plugin 覆蓋）
 
-# ── ZSH 補全外觀 ───────────────────────────────────
+# ── ZSH 補全外觀 ────────────────────────────────
 ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE="fg=#6c7a89"
 ZSH_AUTOSUGGEST_USE_ASYNC=1
-ZSHRC
+ZSHRC_PLUGINS
 
   log ".zshrc 完成"
 fi
@@ -1057,16 +1063,13 @@ fi
 
 # ════════════════════════════════════════════════════════════════════
 #  區塊 17：Starship Prompt
-#
-#  跨 shell 現代 prompt，顯示目錄、git 狀態、Python/Node 版本
-#  色彩風格：Solarized Dark（與 Ghostty 和 Vim 統一）
 # ════════════════════════════════════════════════════════════════════
 
 section "Starship"
 
 if menu_is_on "dev_starship"; then
   brew_pkg "starship"
-  mkdir -p "$HOME/.config"
+  install -d -m 755 "$HOME/.config"
   cat >"$HOME/.config/starship.toml" <<'STARSHIP'
 # Starship · Solarized Dark 風格
 format = """
@@ -1129,9 +1132,6 @@ fi
 
 # ════════════════════════════════════════════════════════════════════
 #  區塊 18：Vim 設定
-#
-#  vim-plug + 10 個常用 plugin，Solarized Dark 主題
-#  注意：colorscheme 用 silent! 避免首次啟動時 plugin 還沒下載前報錯
 # ════════════════════════════════════════════════════════════════════
 
 section "Vim"
@@ -1139,7 +1139,6 @@ section "Vim"
 if menu_is_on "dev_vim"; then
   brew_pkg "vim"
 
-  # 安裝 vim-plug
   if [ -f "$HOME/.vim/autoload/plug.vim" ]; then
     log "vim-plug 已安裝"
   else
@@ -1153,22 +1152,25 @@ if menu_is_on "dev_vim"; then
     fi
   fi
 
+  # 備份現有 .vimrc，避免覆蓋使用者既有設定
+  backup_if_exists "$HOME/.vimrc"
+
   cat >"$HOME/.vimrc" <<'VIMRC'
 " ── vim-plug ───────────────────────────────────────
 call plug#begin('~/.vim/plugged')
-  Plug 'altercation/vim-colors-solarized'   " 主題
-  Plug 'vim-airline/vim-airline'             " 狀態列
-  Plug 'vim-airline/vim-airline-themes'      " 狀態列主題
-  Plug 'preservim/nerdtree'                  " 檔案樹（Ctrl-N）
-  Plug 'airblade/vim-gitgutter'              " Git 行狀態
-  Plug 'tpope/vim-fugitive'                  " :Git 指令整合
-  Plug 'dense-analysis/ale'                  " 非同步語法檢查
-  Plug 'Yggdroot/indentLine'                 " 縮排線
-  Plug 'tpope/vim-commentary'                " gc 註解
-  Plug 'jiangmiao/auto-pairs'                " 括號自動配對
+  Plug 'altercation/vim-colors-solarized'
+  Plug 'vim-airline/vim-airline'
+  Plug 'vim-airline/vim-airline-themes'
+  Plug 'preservim/nerdtree'
+  Plug 'airblade/vim-gitgutter'
+  Plug 'tpope/vim-fugitive'
+  Plug 'dense-analysis/ale'
+  Plug 'Yggdroot/indentLine'
+  Plug 'tpope/vim-commentary'
+  Plug 'jiangmiao/auto-pairs'
 call plug#end()
 
-" ── 外觀（silent! 避免首次啟動 plugin 未下載報錯）─
+" ── 外觀 ────────────────────────────────────────────
 syntax enable
 set background=dark
 silent! colorscheme solarized
@@ -1176,12 +1178,12 @@ let g:airline_theme='solarized'
 let g:airline_powerline_fonts=1
 let g:airline#extensions#tabline#enabled=1
 
-" ── 行號 ───────────────────────────────────────────
+" ── 行號 ────────────────────────────────────────────
 set number
 set relativenumber
 set cursorline
 
-" ── UI ────────────────────────────────────────────
+" ── UI ──────────────────────────────────────────────
 set showcmd
 set showmatch
 set wildmenu
@@ -1190,20 +1192,20 @@ set laststatus=2
 set scrolloff=8
 set sidescrolloff=8
 
-" ── 搜尋 ───────────────────────────────────────────
+" ── 搜尋 ────────────────────────────────────────────
 set incsearch
 set hlsearch
 set ignorecase
 set smartcase
 
-" ── 縮排 ───────────────────────────────────────────
+" ── 縮排 ────────────────────────────────────────────
 set expandtab
 set shiftwidth=2
 set tabstop=2
 set smartindent
 set autoindent
 
-" ── 檔案 ───────────────────────────────────────────
+" ── 檔案 ────────────────────────────────────────────
 set encoding=utf-8
 set fileencoding=utf-8
 set fileencodings=utf-8,big5,gbk,latin1
@@ -1213,28 +1215,28 @@ set nobackup
 set nowritebackup
 set hidden
 
-" ── 滑鼠 ───────────────────────────────────────────
+" ── 滑鼠 ────────────────────────────────────────────
 set mouse=a
 
-" ── 語法縮排規則 ───────────────────────────────────
+" ── 語法縮排規則 ─────────────────────────────────────
 filetype plugin indent on
-autocmd BufNewFile,BufRead *.py     set tabstop=4 shiftwidth=4
+autocmd BufNewFile,BufRead *.py         set tabstop=4 shiftwidth=4
 autocmd BufNewFile,BufRead *.yaml,*.yml setlocal tabstop=2 shiftwidth=2
-autocmd BufNewFile,BufRead *.json   setlocal tabstop=2 shiftwidth=2
-autocmd BufNewFile,BufRead *.md     setlocal tabstop=2 shiftwidth=2 wrap linebreak
+autocmd BufNewFile,BufRead *.json       setlocal tabstop=2 shiftwidth=2
+autocmd BufNewFile,BufRead *.md         setlocal tabstop=2 shiftwidth=2 wrap linebreak
 
-" ── NERDTree ──────────────────────────────────────
+" ── NERDTree ────────────────────────────────────────
 map <C-n> :NERDTreeToggle<CR>
 let NERDTreeShowHidden=1
 let NERDTreeMinimalUI=1
 let NERDTreeIgnore=['\.DS_Store$', '\.git$', '__pycache__']
 
-" ── ALE 語法檢查 ───────────────────────────────────
+" ── ALE ─────────────────────────────────────────────
 let g:ale_linters = {'python': ['flake8'], 'yaml': ['yamllint']}
 let g:ale_fixers  = {'python': ['autopep8'], '*': ['remove_trailing_lines', 'trim_whitespace']}
 let g:ale_fix_on_save=1
 
-" ── 快捷鍵 ─────────────────────────────────────────
+" ── 快捷鍵 ──────────────────────────────────────────
 let mapleader=","
 nnoremap <leader>w :w<CR>
 nnoremap <leader>q :q<CR>
@@ -1252,7 +1254,6 @@ vnoremap <leader>y "+y
 nnoremap <leader>p "+p
 VIMRC
 
-  # 自動執行 :PlugInstall
   if vim +PlugInstall +qall &>/dev/null; then
     log "Vim plugins 完成"
   else
@@ -1264,13 +1265,24 @@ fi
 
 # ════════════════════════════════════════════════════════════════════
 #  區塊 19：VS Code 設定
+#
+#  解決「冷啟動」問題：
+#  優先用 PATH 中的 code，找不到則嘗試 App 包內的絕對路徑
 # ════════════════════════════════════════════════════════════════════
 
 section "VS Code"
 
 if menu_is_on "app_vscode"; then
-  # 安裝擴充功能
+  CODE_BIN="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
   if command -v code &>/dev/null; then
+    CODE_CMD="code"
+  elif [[ -x "$CODE_BIN" ]]; then
+    CODE_CMD="$CODE_BIN"
+  else
+    CODE_CMD=""
+  fi
+
+  if [[ -n "$CODE_CMD" ]]; then
     for ext in \
       "ms-python.python" \
       "eamodio.gitlens" \
@@ -1279,7 +1291,7 @@ if menu_is_on "app_vscode"; then
       "1Password.op-vscode" \
       "esbenp.prettier-vscode"
     do
-      if code --install-extension "$ext" --force &>/dev/null; then
+      if "$CODE_CMD" --install-extension "$ext" --force &>/dev/null; then
         log "$ext ✓"
       else
         warn "$ext 安裝失敗"
@@ -1290,7 +1302,6 @@ if menu_is_on "app_vscode"; then
     add_manual "VS Code → Command Palette → 'Shell Command: Install code in PATH'，再重新執行腳本"
   fi
 
-  # settings.json（路徑含空白，必須用雙引號）
   VSCODE_SETTINGS_DIR="$HOME/Library/Application Support/Code/User"
   mkdir -p "$VSCODE_SETTINGS_DIR"
   cat >"$VSCODE_SETTINGS_DIR/settings.json" <<'VSCODE'
@@ -1371,6 +1382,11 @@ section "開發環境"
 
 # ── Python：pyenv + pyenv-virtualenv ──
 if menu_is_on "dev_python"; then
+  # 先安裝編譯依賴（openssl、sqlite 等），否則 pyenv compile 會失敗
+  for dep in openssl@3 readline sqlite xz zlib; do
+    brew_pkg "$dep"
+  done
+
   brew_pkg "pyenv"
   brew_pkg "pyenv-virtualenv"
 
@@ -1378,16 +1394,19 @@ if menu_is_on "dev_python"; then
   export PATH="$PYENV_ROOT/bin:$PATH"
   eval "$(pyenv init --path)" 2>/dev/null || true
 
+  # 設定 OpenSSL 編譯旗標，確保 ssl module 正確連結
+  export LDFLAGS="-L$(brew --prefix openssl@3)/lib"
+  export CPPFLAGS="-I$(brew --prefix openssl@3)/include"
+  export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig"
+
   if ! command -v pyenv &>/dev/null; then
     warn "pyenv 不可用，跳過 Python 版本安裝"
     add_manual "新終端機執行：pyenv install <version> && pyenv global <version>"
   else
-    # 取最新 3.x.x 穩定版（過濾 alpha/beta/dev）
-    # 注意：用 || true 保護整個 pipeline，避免 grep 沒匹配導致中止
+    # 用 awk 掃描完整清單取最後一個符合 3.x.x 純數字版本的穩定版
+    # 比 grep | tail 更健壯：支援三位數版號（3.14.x）並確保不匹配 rc/dev
     LATEST_PYTHON=$(pyenv install --list 2>/dev/null \
-      | grep -E "^\s+3\.[0-9]+\.[0-9]+$" \
-      | tail -1 \
-      | tr -d ' ' \
+      | awk '/^[[:space:]]+3\.[0-9]+\.[0-9]+[[:space:]]*$/{v=$1} END{if(v!="")print v}' \
       || true)
 
     if [ -z "$LATEST_PYTHON" ]; then
@@ -1395,7 +1414,7 @@ if menu_is_on "dev_python"; then
       add_manual "新終端機執行：pyenv install --list 找版本後安裝"
     else
       info "Python 最新穩定版：$LATEST_PYTHON"
-      if pyenv versions 2>/dev/null | grep -q "$LATEST_PYTHON"; then
+      if pyenv versions 2>/dev/null | grep -qF "$LATEST_PYTHON"; then
         log "Python $LATEST_PYTHON 已安裝"
       else
         info "安裝 Python $LATEST_PYTHON（需幾分鐘）..."
@@ -1403,20 +1422,27 @@ if menu_is_on "dev_python"; then
           log "Python $LATEST_PYTHON ✓"
         else
           warn "Python 安裝失敗"
+          add_manual "新終端機執行：pyenv install $LATEST_PYTHON && pyenv global $LATEST_PYTHON"
         fi
       fi
       pyenv global "$LATEST_PYTHON" 2>/dev/null || true
       log "Python 設定完成"
     fi
   fi
+
+  # 清除編譯旗標，避免影響後續其他套件
+  unset LDFLAGS CPPFLAGS PKG_CONFIG_PATH
 fi
 
 # ── Node：nvm + Node 24 LTS + pnpm ──
+# NVM_DIR 設為 $HOME/.nvm（nvm 儲存 Node 版本的位置）
+# nvm 本體從 Homebrew 安裝（/opt/homebrew/opt/nvm/nvm.sh），不從 $NVM_DIR 載入
 if menu_is_on "dev_node"; then
   brew_pkg "nvm"
 
   export NVM_DIR="$HOME/.nvm"
-  mkdir -p "$NVM_DIR"
+  # 用 install -d 確保目錄存在且屬於當前使用者
+  install -d -m 755 "$NVM_DIR"
 
   if [ ! -s "/opt/homebrew/opt/nvm/nvm.sh" ]; then
     warn "nvm.sh 找不到，無法立即安裝 Node"
@@ -1440,41 +1466,44 @@ fi
 
 # ── Git 設定 + SSH config + 全域 .gitignore ──
 if menu_is_on "dev_git"; then
-  # Git 基本設定
   if [ -n "$GIT_NAME" ];  then git config --global user.name  "$GIT_NAME";  fi
   if [ -n "$GIT_EMAIL" ]; then git config --global user.email "$GIT_EMAIL"; fi
 
   git config --global core.editor          "vim"
   git config --global init.defaultBranch   "main"
   git config --global pull.rebase          false
-  git config --global core.autocrlf        input    # 提交時轉 LF，checkout 保持
-  git config --global core.precomposeunicode true   # macOS 中文檔名正規化
-  git config --global fetch.prune          true     # fetch 時清除已消失的遠端分支
-  git config --global diff.colorMoved      zebra    # 移動的行用不同色
-  git config --global merge.conflictstyle  diff3    # 衝突顯示三方
-  git config --global rebase.autoStash     true     # rebase 前自動 stash
+  git config --global core.autocrlf        input
+  git config --global core.precomposeunicode true
+  git config --global fetch.prune          true
+  git config --global diff.colorMoved      zebra
+  git config --global merge.conflictstyle  diff3
+  git config --global rebase.autoStash     true
 
-  # 1Password SSH 簽名（需要時手動開啟 commit.gpgsign）
   git config --global gpg.format           ssh
   git config --global gpg.ssh.program      "/Applications/1Password.app/Contents/MacOS/op-ssh-sign"
   git config --global commit.gpgsign       false
 
-  # SSH config（用無引號 heredoc 讓 $HOME 展開為實際路徑）
-  # 重要：IdentityAgent 不能用 ~（SSH 不展開 ~）
-  # 重要：SSH config 不支援行內 # 註解，必須獨立行
   mkdir -p "$HOME/.ssh"
   chmod 700 "$HOME/.ssh"
+
+  # 預先加入 GitHub 的 SSH host fingerprint，避免第一次連線時互動式確認卡住自動化流程
+  ssh-keyscan -H github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+  # 去重複，保持 known_hosts 乾淨
+  sort -u "$HOME/.ssh/known_hosts" -o "$HOME/.ssh/known_hosts" 2>/dev/null || true
+  chmod 600 "$HOME/.ssh/known_hosts"
+
+  # SSH config
+  # StrictHostKeyChecking accept-new：自動接受新主機金鑰（不接受已變更的），
+  # 解決第一次連 GitHub 的 fingerprint 確認卡住問題
   cat >"$HOME/.ssh/config" <<SSH_CONFIG
 # ── GitHub ─────────────────────────────────────
 Host github.com
   HostName github.com
   User git
+  StrictHostKeyChecking accept-new
   IdentityAgent "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 
-# ── 全域預設 ───────────────────────────────────
-# ServerAliveInterval：每 60 秒 keepalive
-# ServerAliveCountMax：最多重試 3 次
-# AddKeysToAgent：自動將私鑰加入 agent
+# ── 全域預設 ────────────────────────────────────
 Host *
   ServerAliveInterval 60
   ServerAliveCountMax 3
@@ -1528,7 +1557,7 @@ yarn-error.log*
 .npm
 .node_repl_history
 
-# ── 環境變數（不能進版本控制）─────────────────────
+# ── 環境變數 ─────────────────────────────────────
 .env
 .env.local
 .env.*.local
@@ -1561,7 +1590,6 @@ if menu_is_on "dev_homebrew_update"; then
   LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
   mkdir -p "$LAUNCH_AGENT_DIR"
 
-  # plist 內 && 必須寫 &amp;&amp;（XML 跳脫）
   cat >"$LAUNCH_AGENT_DIR/com.user.brew-update.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -1593,7 +1621,6 @@ if menu_is_on "dev_homebrew_update"; then
 </plist>
 PLIST
 
-  # 優先用 bootstrap（macOS 13+），失敗退回 load
   launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENT_DIR/com.user.brew-update.plist" 2>/dev/null \
     || launchctl load "$LAUNCH_AGENT_DIR/com.user.brew-update.plist" 2>/dev/null \
     || true
@@ -1607,19 +1634,18 @@ fi
 # ════════════════════════════════════════════════════════════════════
 
 section "更新所有套件"
-info "執行 brew upgrade（確保所有 CLI 工具和 App 都是最新版）..."
+info "執行 brew upgrade..."
 brew upgrade 2>&1 | grep -v "^$" || true
 brew upgrade --cask 2>&1 | grep -v "^$" || true
 brew cleanup
 log "所有套件已更新"
 
 
+# ════════════════════════════════════════════════════════════════════
+#  區塊 22：手動步驟彙整
+# ════════════════════════════════════════════════════════════════════
 
-
-# 檢查瀏覽器 + 1Password 組合，提醒安裝瀏覽器擴充
-HAS_CHROME=false
-HAS_BRAVE=false
-HAS_1PW=false
+HAS_CHROME=false; HAS_BRAVE=false; HAS_1PW=false
 if menu_is_on "app_chrome";    then HAS_CHROME=true; fi
 if menu_is_on "app_brave";     then HAS_BRAVE=true;  fi
 if menu_is_on "app_1password"; then HAS_1PW=true;    fi
