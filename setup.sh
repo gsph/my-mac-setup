@@ -216,6 +216,7 @@ menu_run() {
 
 brew_pkg() {
   local pkg=$1
+  command -v brew &>/dev/null || { warn "$pkg 略過（Homebrew 不可用）"; return 0; }
   if brew list "$pkg" &>/dev/null; then
     log "$pkg 已安裝"
     return 0
@@ -231,6 +232,7 @@ brew_pkg() {
 
 brew_cask() {
   local cask=$1
+  command -v brew &>/dev/null || { warn "$cask 略過（Homebrew 不可用）"; return 0; }
   if brew list --cask "$cask" &>/dev/null; then
     log "$cask 已安裝"
     return 0
@@ -532,30 +534,51 @@ if [[ ! "$FINAL_CONFIRM" =~ ^[Yy]$ ]]; then
   exit 0
 fi
 
-# ── sudo 鎖定（確認後立即取得，並在背景保持存活）─────────────────────
-# 一般（非管理員）帳號沒有 sudo 權限，整段需要 root 的系統設定會自動略過，
-# 其餘使用者層的安裝（Homebrew、套件、dotfiles、個人偏好）照常進行，
-# 不再因為缺少管理員權限而整個腳本失效。
+# ── 取得安裝期間所需的管理員權限 ──────────────────────────────────────
+# 整個安裝期間用一條「暫時 NOPASSWD sudoers 規則」取得 sudo，結束（含異常）
+# 由 trap 自動移除。寫入這條規則的方式分兩種：
+#   • 管理員：sudo -v 後直接寫入。
+#   • 一般使用者：沒有 sudo 權限，改用 osascript 的「以管理員身分執行」對話框，
+#     請在旁的管理員輸入一次帳密（此對話框接受任何管理員帳密，即使目前帳號非管理員）。
+#     寫入後此帳號在安裝期間即可使用 sudo，Homebrew / Xcode CLT / cask / 系統設定
+#     都能正常安裝；結束後規則移除，帳號恢復原本的非管理員狀態，不留後門。
+# macOS 預設 tty_tickets 讓背景 keepalive loop 無效，故用 NOPASSWD 規則取代。
 HAS_SUDO=false
+CURRENT_USER=$(whoami)
+SUDOERS_TEMP="/etc/sudoers.d/mac-setup-${CURRENT_USER}-tmp"
+SUDO_RULE="${CURRENT_USER} ALL=(ALL) NOPASSWD: ALL"
+
 if [ "$IS_ADMIN" = "true" ] && sudo -v 2>/dev/null; then
-  HAS_SUDO=true
-  # macOS 預設使用 tty_tickets：sudo 憑證綁定在前景 TTY，
-  # 背景子程序沒有相同 TTY，無法刷新憑證，keepalive loop 方案在 macOS 上無效。
-  # 改為寫入暫時 NOPASSWD sudoers 規則，讓整個安裝期間不再要求密碼；
-  # 腳本結束（正常或異常）時由 trap 自動清除。
-  # 長腳本安裝期間 sudo 可能過期，這個做法讓整段安裝都不會再被要求密碼。
-  SUDOERS_TEMP="/etc/sudoers.d/mac-setup-$(whoami)-tmp"
-  echo "$(whoami) ALL=(ALL) NOPASSWD: ALL" | sudo tee "$SUDOERS_TEMP" >/dev/null
+  # 管理員：直接寫入暫時 NOPASSWD 規則
+  echo "$SUDO_RULE" | sudo tee "$SUDOERS_TEMP" >/dev/null
   sudo chmod 440 "$SUDOERS_TEMP"
+  HAS_SUDO=true
   trap 'sudo rm -f "$SUDOERS_TEMP" 2>/dev/null' EXIT INT TERM
 else
-  if [ "$IS_ADMIN" = "true" ]; then
-    warn "未取得管理員密碼，將略過所有需要系統權限（sudo）的步驟"
+  # 一般使用者（或管理員密碼未通過）：詢問是否請管理員在旁協助授權
+  echo
+  warn "目前帳號沒有管理員權限。Homebrew、應用程式與系統設定都需要管理員授權才能安裝。"
+  read -rp "  要不要請管理員在旁協助授權（會跳出系統對話框，由管理員輸入一次帳密）？[Y/n] " ADMIN_ASSIST
+  if [[ ! "$ADMIN_ASSIST" =~ ^[Nn]$ ]]; then
+    info "即將跳出系統授權對話框，請管理員輸入帳號與密碼..."
+    # 以 root 身分寫入暫時 NOPASSWD sudoers 規則；用單引號包住內容避免 shell 展開，
+    # 整段不含雙引號故不需 AppleScript 跳脫。寫入後用 sudo -n 驗證規則確實生效。
+    if osascript -e "do shell script \"/bin/echo '${SUDO_RULE}' > '${SUDOERS_TEMP}' && /bin/chmod 440 '${SUDOERS_TEMP}'\" with administrator privileges" >/dev/null 2>&1 \
+       && sudo -n true 2>/dev/null; then
+      HAS_SUDO=true
+      trap 'sudo rm -f "$SUDOERS_TEMP" 2>/dev/null' EXIT INT TERM
+      log "已取得安裝期間的管理員權限（安裝結束後自動移除）"
+    else
+      warn "未取得管理員授權，將只進行不需權限的安裝"
+    fi
   else
-    warn "目前為一般使用者（非管理員），將略過所有需要系統權限（sudo）的步驟"
+    warn "略過管理員授權，將只進行不需權限的安裝"
   fi
-  info "使用者層的安裝（Homebrew、套件、dotfiles、個人偏好）會照常進行"
-  add_manual "下列系統設定需由管理員手動完成：電腦名稱、時區、自動更新、防火牆、Ghostty 完整磁碟存取"
+
+  if [ "$HAS_SUDO" != "true" ]; then
+    info "使用者層的安裝（dotfiles、個人偏好等）會照常進行"
+    add_manual "以下項目需管理員權限，因未授權而略過：Homebrew / Xcode CLT / 應用程式（cask）安裝、電腦名稱、時區、自動更新、防火牆、Ghostty 完整磁碟存取"
+  fi
 fi
 
 
@@ -594,13 +617,19 @@ section "Xcode Command Line Tools"
 
 if xcode-select -p &>/dev/null; then
   log "已安裝"
+elif [ "$HAS_SUDO" != "true" ]; then
+  # 沒有管理員權限時無法安裝 CLT（且 Homebrew 也裝不了），不中止整個腳本，
+  # 改為略過並列入手動清單，讓不需權限的使用者層設定仍能繼續。
+  warn "未安裝 Xcode Command Line Tools，且無管理員權限可安裝，略過"
+  add_manual "請以管理員執行「xcode-select --install」安裝 Xcode Command Line Tools（Homebrew 需要它）"
 else
   info "安裝 Xcode Command Line Tools..."
   xcode-select --install 2>/dev/null || true
   warn "請在跳出的視窗點擊「安裝」，完成後按 Enter 繼續..."
   read -r || true
   if ! xcode-select -p &>/dev/null; then
-    fail "Xcode Command Line Tools 安裝失敗，無法繼續"
+    warn "Xcode Command Line Tools 尚未安裝完成，後續部分編譯型套件可能失敗"
+    add_manual "若套件安裝有問題：先完成 Xcode Command Line Tools 安裝後重跑腳本"
   fi
 fi
 
@@ -614,15 +643,25 @@ section "Homebrew"
 if command -v brew &>/dev/null; then
   log "已安裝，更新中..."
   brew update --quiet || warn "brew update 失敗，繼續執行"
+elif [ "$HAS_SUDO" != "true" ]; then
+  # Homebrew 安裝需要管理員權限建立 /opt/homebrew；沒有授權就略過，
+  # 後續所有 brew_pkg / brew_cask 會自動偵測 brew 不存在並略過（不會中止腳本）。
+  warn "無管理員權限，略過 Homebrew 安裝；後續套件與應用程式安裝會一併略過"
+  add_manual "請以管理員安裝 Homebrew（https://brew.sh）後重跑腳本，或重跑時選擇「請管理員協助授權」"
 else
   info "安裝 Homebrew（可能需要幾分鐘）..."
-  NONINTERACTIVE=1 /bin/bash -c \
-    "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  # 以內容判斷是否已寫入，避免部分失敗重跑時 .zprofile 累積重複行
-  grep -qF 'brew shellenv' "$HOME/.zprofile" 2>/dev/null \
-    || echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> "$HOME/.zprofile"
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-  log "Homebrew 安裝完成"
+  # 安裝失敗不讓 set -e 中止整個腳本；失敗就警告並讓後續 brew 步驟自動略過
+  if NONINTERACTIVE=1 /bin/bash -c \
+       "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"; then
+    # 以內容判斷是否已寫入，避免部分失敗重跑時 .zprofile 累積重複行
+    grep -qF 'brew shellenv' "$HOME/.zprofile" 2>/dev/null \
+      || echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> "$HOME/.zprofile"
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+    log "Homebrew 安裝完成"
+  else
+    warn "Homebrew 安裝失敗，後續套件與應用程式安裝會一併略過"
+    add_manual "請手動安裝 Homebrew（https://brew.sh）後重跑腳本"
+  fi
 fi
 
 

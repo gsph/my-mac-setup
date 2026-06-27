@@ -307,9 +307,15 @@ Ghostty · VS Code · Claude · Obsidian · 系統設定
 
 確認後寫入暫時 NOPASSWD sudoers 規則（`/etc/sudoers.d/...`），整個安裝期間不再反覆要密碼；腳本結束（含異常）由 `trap` 自動移除。macOS 的 `tty_tickets` 讓背景 keepalive loop 無效，故改用此法。
 
-### 一般使用者（非管理員）相容
+### 一般使用者（非管理員）相容 + 管理員在旁協助授權
 
-非管理員帳號沒有 `sudo` 權限。腳本不再因此整個失效：偵測到不是管理員（或拿不到 sudo）時，會自動略過所有需要系統權限的步驟（電腦名稱、時區、自動更新、防火牆、Ghostty 完整磁碟存取），其餘使用者層的安裝（Homebrew、套件、dotfiles、個人偏好）照常進行，並把略過的系統設定列入最後的「手動補完清單」。
+非管理員帳號沒有 `sudo` 權限，而 Homebrew、應用程式（cask）、Xcode CLT 與系統設定都需要管理員權限。腳本對此分兩段處理：
+
+1. **請管理員在旁協助授權（推薦）**：偵測到非管理員時，腳本會問是否請管理員協助。若同意，會跳出 macOS 原生的「以管理員身分執行」對話框——這個對話框**接受任何管理員的帳密，即使目前登入的是一般使用者**。管理員輸入一次帳密後，腳本以 root 寫入一條暫時 NOPASSWD sudoers 規則（`/etc/sudoers.d/...`），讓這個帳號**在安裝期間取得 `sudo`**，於是 Homebrew / Xcode CLT / cask / 系統設定全部能正常安裝。腳本結束（含異常）由 `trap` 自動移除規則，帳號**恢復原本的非管理員狀態，不留後門**。
+
+2. **未授權則優雅降級**：若使用者選擇不請管理員協助、或授權未通過，腳本**不會中止**，而是自動略過所有需要權限的步驟（Homebrew、Xcode CLT、cask 應用程式、電腦名稱、時區、自動更新、防火牆、Ghostty FDA），只進行不需權限的使用者層設定（dotfiles、Oh My Zsh、Vim、Git/SSH 設定等），並把略過項目列入最後的「手動補完清單」。`brew_pkg` / `brew_cask` 也會在 Homebrew 不存在時自動略過，避免一連串安裝失敗的噪音。
+
+> 技術實作：管理員與非管理員最終都走同一條「暫時 NOPASSWD sudoers」路徑，差別只在取得方式——管理員用 `sudo -v`，非管理員用 `osascript ... with administrator privileges`。macOS 預設 `tty_tickets` 讓背景 keepalive loop 無效，故用 NOPASSWD 規則取代。
 
 ### 輸入帶預設值
 
