@@ -887,7 +887,7 @@ if menu_is_on "app_ghostty"; then
 
   cat >"$HOME/.config/ghostty/config" <<'GHOSTTY'
 # ── 外觀 ───────────────────────────────────────────
-theme              = "Solarized Dark"
+theme              = "iTerm2 Solarized Dark"
 font-family        = "JetBrains Mono Nerd Font"
 font-size          = 14
 window-padding-x   = 12
