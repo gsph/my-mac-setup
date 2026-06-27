@@ -533,16 +533,30 @@ if [[ ! "$FINAL_CONFIRM" =~ ^[Yy]$ ]]; then
 fi
 
 # ── sudo 鎖定（確認後立即取得，並在背景保持存活）─────────────────────
-# 長腳本安裝期間 sudo 可能過期，用背景 loop 每 60 秒刷新 token
-sudo -v || fail "需要管理員密碼才能繼續"
-# macOS 預設使用 tty_tickets：sudo 憑證綁定在前景 TTY，
-# 背景子程序沒有相同 TTY，無法刷新憑證，keepalive loop 方案在 macOS 上無效。
-# 改為寫入暫時 NOPASSWD sudoers 規則，讓整個安裝期間不再要求密碼；
-# 腳本結束（正常或異常）時由 trap 自動清除。
-SUDOERS_TEMP="/etc/sudoers.d/mac-setup-$(whoami)-tmp"
-echo "$(whoami) ALL=(ALL) NOPASSWD: ALL" | sudo tee "$SUDOERS_TEMP" >/dev/null
-sudo chmod 440 "$SUDOERS_TEMP"
-trap 'sudo rm -f "$SUDOERS_TEMP" 2>/dev/null' EXIT INT TERM
+# 一般（非管理員）帳號沒有 sudo 權限，整段需要 root 的系統設定會自動略過，
+# 其餘使用者層的安裝（Homebrew、套件、dotfiles、個人偏好）照常進行，
+# 不再因為缺少管理員權限而整個腳本失效。
+HAS_SUDO=false
+if [ "$IS_ADMIN" = "true" ] && sudo -v 2>/dev/null; then
+  HAS_SUDO=true
+  # macOS 預設使用 tty_tickets：sudo 憑證綁定在前景 TTY，
+  # 背景子程序沒有相同 TTY，無法刷新憑證，keepalive loop 方案在 macOS 上無效。
+  # 改為寫入暫時 NOPASSWD sudoers 規則，讓整個安裝期間不再要求密碼；
+  # 腳本結束（正常或異常）時由 trap 自動清除。
+  # 長腳本安裝期間 sudo 可能過期，這個做法讓整段安裝都不會再被要求密碼。
+  SUDOERS_TEMP="/etc/sudoers.d/mac-setup-$(whoami)-tmp"
+  echo "$(whoami) ALL=(ALL) NOPASSWD: ALL" | sudo tee "$SUDOERS_TEMP" >/dev/null
+  sudo chmod 440 "$SUDOERS_TEMP"
+  trap 'sudo rm -f "$SUDOERS_TEMP" 2>/dev/null' EXIT INT TERM
+else
+  if [ "$IS_ADMIN" = "true" ]; then
+    warn "未取得管理員密碼，將略過所有需要系統權限（sudo）的步驟"
+  else
+    warn "目前為一般使用者（非管理員），將略過所有需要系統權限（sudo）的步驟"
+  fi
+  info "使用者層的安裝（Homebrew、套件、dotfiles、個人偏好）會照常進行"
+  add_manual "下列系統設定需由管理員手動完成：電腦名稱、時區、自動更新、防火牆、Ghostty 完整磁碟存取"
+fi
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -563,7 +577,7 @@ if [[ "$MACOS_VERSION" != 26.* ]]; then
   warn "建議使用 macOS Tahoe (26+)，目前版本 $MACOS_VERSION"
 fi
 
-if [ -n "$COMPUTER_DISPLAY_NAME" ] && [ -n "$COMPUTER_NETWORK_NAME" ]; then
+if [ "$HAS_SUDO" = "true" ] && [ -n "$COMPUTER_DISPLAY_NAME" ] && [ -n "$COMPUTER_NETWORK_NAME" ]; then
   sudo scutil --set ComputerName  "$COMPUTER_DISPLAY_NAME"
   sudo scutil --set HostName      "$COMPUTER_NETWORK_NAME"
   sudo scutil --set LocalHostName "$COMPUTER_NETWORK_NAME"
@@ -830,7 +844,9 @@ fi
 # macOS Tahoe 在終端機未具備全磁碟存取權限（FDA）時 systemsetup 會失敗
 # 嘗試 systemsetup，失敗則透過 launchd 設定並通知手動補完
 if menu_is_on "sys_timezone"; then
-  if sudo systemsetup -settimezone "Asia/Taipei" 2>/dev/null; then
+  if [ "$HAS_SUDO" != "true" ]; then
+    add_manual "需管理員：系統設定 → 一般 → 日期與時間 → 時區設為「台北」並開啟網路自動同步"
+  elif sudo systemsetup -settimezone "Asia/Taipei" 2>/dev/null; then
     sudo systemsetup -setusingnetworktime on 2>/dev/null || true
     log "時區：台北，網路自動同步"
   else
@@ -843,19 +859,27 @@ fi
 
 # ── macOS 自動更新 ──
 if menu_is_on "sys_autoupdate"; then
-  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled            -bool true
-  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload                -bool true
-  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool true
-  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall            -bool true
-  sudo defaults write /Library/Preferences/com.apple.commerce       AutoUpdate                       -bool true
-  log "macOS 自動更新已開啟"
+  if [ "$HAS_SUDO" != "true" ]; then
+    add_manual "需管理員：系統設定 → 一般 → 軟體更新 → 開啟自動更新"
+  else
+    sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled            -bool true
+    sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload                -bool true
+    sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool true
+    sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall            -bool true
+    sudo defaults write /Library/Preferences/com.apple.commerce       AutoUpdate                       -bool true
+    log "macOS 自動更新已開啟"
+  fi
 fi
 
 # ── 防火牆 ──
 if menu_is_on "sys_firewall"; then
-  sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
-  sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setstealthmode on
-  log "防火牆已開啟（含隱身模式）"
+  if [ "$HAS_SUDO" != "true" ]; then
+    add_manual "需管理員：系統設定 → 網路 → 防火牆 → 開啟（並開啟隱身模式）"
+  else
+    sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
+    sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setstealthmode on
+    log "防火牆已開啟（含隱身模式）"
+  fi
 fi
 
 
@@ -1868,7 +1892,9 @@ if menu_is_on "sys_tcc_whitelist"; then
 
   # ── Ghostty：完整磁碟存取（system 層，讓子程序不必逐一詢問）──
   # 需要終端機本身已有 FDA 才能寫入 system TCC.db
-  if menu_is_on "app_ghostty"; then
+  if menu_is_on "app_ghostty" && [ "$HAS_SUDO" != "true" ]; then
+    add_manual "需管理員：系統設定 → 隱私權與安全性 → 完整磁碟存取 → 新增 Ghostty"
+  elif menu_is_on "app_ghostty"; then
     if sudo sqlite3 "$SYS_TCC" \
       "INSERT OR REPLACE INTO access
        (service,client,client_type,auth_value,auth_reason,auth_version,
