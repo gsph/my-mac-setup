@@ -1,4 +1,21 @@
 #!/usr/bin/env bash
+# ── 防止用 sh 執行（dash 不支援 echo -e / [[ ]] 等 bash 語法）────────
+# 偵測到非 bash 環境時，自動用 bash 重新執行並傳入所有參數
+# macOS 的 /bin/sh 是 bash 3.2（BASH_VERSION 有值），但以 sh 呼叫時進入 POSIX 模式，
+# echo -e 不作用。用 shopt -oq posix 偵測 POSIX 模式，重新以 bash 執行。
+if [ -z "${BASH_VERSION:-}" ] || shopt -oq posix 2>/dev/null; then
+  exec /bin/bash "$0" "$@"
+fi
+
+# ── locale 正規化（給「執行期」工具用，例如 sed / grep / tr 處理 UTF-8）──
+# 終端機常送出無效的 LC_ALL=UTF-8，這裡統一成合法的 en_US.UTF-8（macOS 必有）。
+#
+# 注意：這「不能」修掉 bash 的「解析期」全形字 bug。實測 bash 3.2 在任何
+# UTF-8 locale（含合法的 en_US.UTF-8）下，未加大括號的 "$VAR（" 都會把全形字
+# 位元組吃進變數名而報 unbound variable；唯一可靠解法是「變數一律用 ${VAR}」，
+# 尤其後面緊接中文／全形標點時。本檔已全面採用 ${VAR} 寫法。
+export LANG="en_US.UTF-8"
+export LC_ALL="en_US.UTF-8"
 # ════════════════════════════════════════════════════════════════════
 #  macOS Setup Script
 #  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -67,6 +84,19 @@ backup_if_exists() {
     cp "$file" "$backup"
     warn "已備份 $(basename "$file") → $backup"
   fi
+}
+
+# ── 輸入輔助：顯示目前值為預設，直接 Enter 沿用，要改才輸入 ──────────
+# 用法：ask_default "提示文字" "$預設值" 目標變數名
+ask_default() {
+  local prompt=$1 default=$2 __var=$3 reply
+  if [[ -n "$default" ]]; then
+    read -rp "  ${prompt}（目前：${default}；Enter 沿用）: " reply
+    reply="${reply:-$default}"
+  else
+    read -rp "  ${prompt}: " reply
+  fi
+  printf -v "$__var" '%s' "$reply"
 }
 
 
@@ -289,9 +319,21 @@ echo -e "${NC}"
 section "基本資訊"
 echo
 
-read -rp "  使用者名稱（用於顯示）: " USER_DISPLAY_NAME
-read -rp "  外觀模式 [l=淺色 / d=深色]: " APPEARANCE_INPUT
+# ── 偵測目前系統設定值，作為各欄位預設（直接 Enter 即沿用）──────────
+CURRENT_USER_NAME=$(id -F 2>/dev/null || true)
+[ -z "$CURRENT_USER_NAME" ] && CURRENT_USER_NAME=$(whoami)
+CURRENT_GIT_NAME=$(git config --global user.name 2>/dev/null || true)
+CURRENT_GIT_EMAIL=$(git config --global user.email 2>/dev/null || true)
+if defaults read -g AppleInterfaceStyle 2>/dev/null | grep -qi dark; then
+  CURRENT_APPEARANCE="d"; CURRENT_APPEARANCE_LABEL="深色"
+else
+  CURRENT_APPEARANCE="l"; CURRENT_APPEARANCE_LABEL="淺色"
+fi
 
+ask_default "使用者名稱（用於顯示）" "$CURRENT_USER_NAME" USER_DISPLAY_NAME
+
+read -rp "  外觀模式 [l=淺色 / d=深色]（目前：${CURRENT_APPEARANCE_LABEL}；Enter 沿用）: " APPEARANCE_INPUT
+APPEARANCE_INPUT="${APPEARANCE_INPUT:-$CURRENT_APPEARANCE}"
 case "$APPEARANCE_INPUT" in
   [Dd]) APPEARANCE="dark" ;;
   *)    APPEARANCE="light" ;;
@@ -303,27 +345,16 @@ if groups | grep -q "admin"; then
   IS_ADMIN=true
 fi
 
-# grep -c 直接輸出單一整數；|| true 防止無匹配時 pipefail 中止；再以 :-0 補預設
-# （避免舊寫法在 dscl 失敗時因 pipefail + 尾端 || echo 0 而捕捉到 "0\n0"）
-ADMIN_COUNT=$(dscl . -read /Groups/admin GroupMembership 2>/dev/null \
-  | tr ' ' '\n' \
-  | grep -cvE "^(GroupMembership:|$)" \
-  || true)
-ADMIN_COUNT=${ADMIN_COUNT:-0}
-IS_ONLY_ADMIN=false
-if [ "$ADMIN_COUNT" = "1" ]; then
-  IS_ONLY_ADMIN=true
-fi
-
 COMPUTER_DISPLAY_NAME=""
 COMPUTER_NETWORK_NAME=""
 
-if [ "$IS_ADMIN" = "true" ] && [ "$IS_ONLY_ADMIN" = "true" ]; then
+if [ "$IS_ADMIN" = "true" ]; then
   echo
   echo -e "  ${BOLD}電腦名稱設定${NC}"
-  echo -e "  ${DIM}（你是唯一管理員，可以設定電腦名稱）${NC}"
-  read -rp "  顯示名稱（Finder / Find My，可含空格，例如 Philip M4）: " COMPUTER_DISPLAY_NAME
-  read -rp "  網路名稱（終端機 / ping，不可含空格，例如 philip-m4）: " COMPUTER_NETWORK_NAME
+  CURRENT_COMPUTER_NAME=$(scutil --get ComputerName 2>/dev/null || true)
+  CURRENT_LOCAL_HOST=$(scutil --get LocalHostName 2>/dev/null || true)
+  ask_default "顯示名稱（Finder / Find My，可含空格）" "$CURRENT_COMPUTER_NAME" COMPUTER_DISPLAY_NAME
+  ask_default "網路名稱（終端機 / ping，不可含空格）" "$CURRENT_LOCAL_HOST" COMPUTER_NETWORK_NAME
   # LocalHostName 只接受字母/數字/連字號；把非法字元轉成連字號避免 HostName 與 LocalHostName 不一致
   if [[ -n "$COMPUTER_NETWORK_NAME" ]]; then
     SANITIZED_NETWORK_NAME=$(echo "$COMPUTER_NETWORK_NAME" | tr ' ' '-' | tr -cd 'A-Za-z0-9-')
@@ -332,14 +363,12 @@ if [ "$IS_ADMIN" = "true" ] && [ "$IS_ONLY_ADMIN" = "true" ]; then
       COMPUTER_NETWORK_NAME="$SANITIZED_NETWORK_NAME"
     fi
   fi
-else
-  warn "非管理員或非唯一管理員，跳過電腦名稱設定"
 fi
 
 echo
 echo -e "  ${BOLD}Git 設定${NC}（留空則跳過）"
-read -rp "  Git user.name: " GIT_NAME
-read -rp "  Git email: " GIT_EMAIL
+ask_default "Git user.name" "$CURRENT_GIT_NAME" GIT_NAME
+ask_default "Git email" "$CURRENT_GIT_EMAIL" GIT_EMAIL
 
 echo
 echo -e "  確認："
@@ -388,7 +417,6 @@ menu_add "sys_ds_store"        "停止在網路/外接磁碟產生 .DS_Store"
 menu_add "sys_timezone"        "時區：台北（網路自動同步）"
 menu_add "sys_autoupdate"      "macOS 自動更新"
 menu_add "sys_firewall"        "防火牆開啟"
-menu_add "sys_filevault"       "FileVault 磁碟加密"
 menu_add "sys_tcc_whitelist"   "隱私權白名單（op / Claude / Ghostty FDA，免反覆彈窗）"
 
 menu_add "__SECTION__瀏覽器" ""
@@ -424,6 +452,10 @@ menu_add "dev_vim"        "Vim + vim-plug + Solarized Dark"
 menu_add "__SECTION__編輯器" ""
 menu_add "app_vscode"     "VS Code + settings.json + 擴充功能"
 
+menu_add "__SECTION__AI 工具" ""
+menu_add "app_claude_desktop"  "Claude Desktop"
+menu_add "dev_claude_cli"      "Claude CLI（@anthropic-ai/claude-code，需要 Node）"
+
 menu_add "__SECTION__開發環境" ""
 menu_add "dev_python"          "pyenv + pyenv-virtualenv（Python 最新穩定版）"
 menu_add "dev_node"            "nvm（Node 24 LTS）+ pnpm"
@@ -443,6 +475,27 @@ if ! menu_is_on "dev_ohmyzsh"; then
     done
     warn "Starship/pyenv/nvm 需要 .zshrc 初始化，已自動勾選 Oh My Zsh"
   fi
+fi
+
+# ── 相依性：Claude CLI 需要 npm，自動補上 dev_node ──
+if menu_is_on "dev_claude_cli" && ! menu_is_on "dev_node"; then
+  for i in "${!MENU_KEYS[@]}"; do
+    if [[ "${MENU_KEYS[$i]}" == "dev_node" ]]; then
+      MENU_STATE[$i]=1
+    fi
+  done
+  warn "Claude CLI 需要 Node/npm，已自動勾選 Node"
+fi
+
+# ── 滑鼠／鍵盤設定（手動清單最前）────────────────────────────────────
+# 邏輯：先把輸入裝置設好——滑鼠（Logi）、鍵盤輸入法（鼠鬚管）——
+# 之後所有手動操作才順手，故這兩條固定排在清單最前面。
+# （手動清單依 add_manual 執行順序生成，所以在此最早處先排。）
+if menu_is_on "app_logitech"; then
+  add_manual "Logi Options+：將 Lift Left 主按鍵對調為右手佈局"
+fi
+if menu_is_on "app_rime"; then
+  add_manual "系統設定 → 鍵盤 → 輸入來源 → 新增「鼠鬚管」（重新開機後加入）"
 fi
 
 
@@ -482,17 +535,14 @@ fi
 # ── sudo 鎖定（確認後立即取得，並在背景保持存活）─────────────────────
 # 長腳本安裝期間 sudo 可能過期，用背景 loop 每 60 秒刷新 token
 sudo -v || fail "需要管理員密碼才能繼續"
-# 背景子 shell 必須 set +e：否則 sudo token 過期時 `sudo -n true` 回傳非零，
-# 在繼承的 set -e 下會殺掉整個 keepalive（剛好就在它該補刷的時刻）。
-# 先檢查父進程存活再 sleep，讓父進程死亡後最多殘留一個閒置 sleep。
-( set +e
-  while true; do
-    kill -0 "$$" 2>/dev/null || exit 0
-    sudo -n true 2>/dev/null
-    sleep 60
-  done ) &
-SUDO_KEEPALIVE_PID=$!
-trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null' EXIT INT TERM
+# macOS 預設使用 tty_tickets：sudo 憑證綁定在前景 TTY，
+# 背景子程序沒有相同 TTY，無法刷新憑證，keepalive loop 方案在 macOS 上無效。
+# 改為寫入暫時 NOPASSWD sudoers 規則，讓整個安裝期間不再要求密碼；
+# 腳本結束（正常或異常）時由 trap 自動清除。
+SUDOERS_TEMP="/etc/sudoers.d/mac-setup-$(whoami)-tmp"
+echo "$(whoami) ALL=(ALL) NOPASSWD: ALL" | sudo tee "$SUDOERS_TEMP" >/dev/null
+sudo chmod 440 "$SUDOERS_TEMP"
+trap 'sudo rm -f "$SUDOERS_TEMP" 2>/dev/null' EXIT INT TERM
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -535,6 +585,9 @@ else
   xcode-select --install 2>/dev/null || true
   warn "請在跳出的視窗點擊「安裝」，完成後按 Enter 繼續..."
   read -r || true
+  if ! xcode-select -p &>/dev/null; then
+    fail "Xcode Command Line Tools 安裝失敗，無法繼續"
+  fi
 fi
 
 
@@ -670,7 +723,6 @@ if menu_is_on "sys_finder"; then
   defaults write com.apple.finder NewWindowTargetPath      -string "file://$HOME/"
   killall Finder 2>/dev/null || true
   log "Finder 設定完成"
-  add_manual "Finder → 設定 → 側邊欄，手動勾選需要顯示的項目（iCloud Drive、AirDrop、外接硬碟等）"
 fi
 
 # ── 選單列 ──
@@ -703,7 +755,6 @@ tell application "System Events"
 end tell
 APPLESCRIPT
   log "桌面：素色岩石色"
-  add_manual "若桌面未變更：系統設定 → 桌面與螢幕保護 → 顏色 → 岩石色"
 fi
 
 # ── 外接鍵盤 Command ↔ Option 互換 ──
@@ -807,38 +858,6 @@ if menu_is_on "sys_firewall"; then
   log "防火牆已開啟（含隱身模式）"
 fi
 
-# ── FileVault ──
-if menu_is_on "sys_filevault"; then
-  FV_STATUS=$(fdesetup status 2>/dev/null || echo "unknown")
-  if echo "$FV_STATUS" | grep -q "FileVault is On"; then
-    log "FileVault 已開啟"
-    add_manual "確認 FileVault Recovery Key 已存入 1Password"
-  else
-    info "開啟 FileVault..."
-    # 只有 enable 真正成功（且印出 Recovery Key）才顯示「請存入」橫幅與成功訊息；
-    # 失敗時不可謊稱已顯示金鑰、也不可謊稱已開啟。
-    if sudo fdesetup enable -user "$(whoami)"; then
-      echo
-      echo -e "${BOLD}${RED}  ══════════════════════════════════════════${NC}"
-      echo -e "${BOLD}${RED}  ⚠  FileVault Recovery Key 已顯示如上${NC}"
-      echo -e "${BOLD}${RED}  ⚠  請立即複製並存入 1Password！${NC}"
-      echo -e "${BOLD}${RED}  ══════════════════════════════════════════${NC}"
-      echo
-      read -rp "  已存入 1Password？[y/N] " FV_CONFIRM
-      if [[ ! "$FV_CONFIRM" =~ ^[Yy]$ ]]; then
-        warn "請務必在繼續前將 Recovery Key 存入 1Password，否則遺失後無法解鎖磁碟"
-        read -rp "  確認已存入，繼續？[y/N] " FV_CONFIRM2
-        [[ ! "$FV_CONFIRM2" =~ ^[Yy]$ ]] && fail "請先存入 Recovery Key 再繼續"
-      fi
-      log "FileVault 已開啟"
-      add_manual "確認 FileVault Recovery Key 已存入 1Password"
-    else
-      warn "FileVault 開啟失敗（未顯示 Recovery Key）"
-      add_manual "手動開啟 FileVault：系統設定 → 隱私權與安全性 → FileVault → 開啟"
-    fi
-  fi
-fi
-
 
 # ════════════════════════════════════════════════════════════════════
 #  區塊 12：套件安裝
@@ -860,6 +879,7 @@ if menu_is_on "app_pearcleaner";   then brew_cask "pearcleaner";      fi
 if menu_is_on "app_monitorcontrol";then brew_cask "monitorcontrol";   fi
 if menu_is_on "app_obsidian";      then brew_cask "obsidian";         fi
 if menu_is_on "app_logitech";      then brew_cask "logi-options+";    fi
+if menu_is_on "app_claude_desktop";then brew_cask "claude";            fi
 
 if menu_is_on "app_vscode"; then
   brew_cask "visual-studio-code"
@@ -887,13 +907,13 @@ if menu_is_on "sys_dock"; then
   # System Preferences.app 在 Tahoe 已移除（改名 System Settings.app），故不再列入
   if dock_reset; then
     for app in \
-      "/System/Library/CoreServices/Finder.app" \
       "/Applications/Safari.app" \
       "/Applications/Google Chrome.app" \
       "/Applications/Brave Browser.app" \
       "/Applications/Spotify.app" \
       "/Applications/Ghostty.app" \
       "/Applications/Visual Studio Code.app" \
+      "/Applications/Claude.app" \
       "/Applications/Obsidian.app" \
       "/System/Applications/System Settings.app"
     do
@@ -941,9 +961,36 @@ patch:
     - "Control+grave"
 RIME
 
-  log "鼠鬚管設定完成"
-  add_manual "系統設定 → 鍵盤 → 輸入來源 → 新增「鼠鬚管」"
-  add_manual "選單列鼠鬚管圖示 → 重新部署（讓嗯蝦米方案生效）"
+  # ── 開機自動部署：LaunchAgent 在登入後重啟 Squirrel 觸發部署 ──────
+  # Squirrel 啟動時若偵測到設定異動會自動執行部署，重啟即可完成
+  LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
+  mkdir -p "$LAUNCH_AGENT_DIR"
+  cat >"$LAUNCH_AGENT_DIR/com.user.rime-deploy.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.user.rime-deploy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>sleep 5 &amp;&amp; killall Squirrel 2&gt;/dev/null; sleep 1 &amp;&amp; open -a '/Library/Input Methods/Squirrel.app' 2&gt;/dev/null; true</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <false/>
+</dict>
+</plist>
+PLIST
+  launchctl bootout "gui/$(id -u)/com.user.rime-deploy" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENT_DIR/com.user.rime-deploy.plist" 2>/dev/null || true
+
+  log "鼠鬚管設定完成（重新開機後自動部署）"
+  # 「新增鼠鬚管輸入來源」手動項已移至區塊 6 滑鼠鍵盤設定（清單第二條）
 fi
 
 
@@ -959,6 +1006,7 @@ section "Ghostty"
 if menu_is_on "app_ghostty"; then
   install -d -m 755 "$HOME/.config"
   install -d -m 755 "$HOME/.config/ghostty"
+  backup_if_exists "$HOME/.config/ghostty/config"
 
   cat >"$HOME/.config/ghostty/config" <<'GHOSTTY'
 # ── 外觀 ───────────────────────────────────────────
@@ -1134,8 +1182,12 @@ ZSH_AUTOSUGGEST_USE_ASYNC=1
 ZSHRC_PLUGINS
 
   # 三段都成功才原子換上正式檔
-  mv -f "$HOME/.zshrc.tmp" "$HOME/.zshrc"
-  log ".zshrc 完成"
+  if mv -f "$HOME/.zshrc.tmp" "$HOME/.zshrc"; then
+    log ".zshrc 完成"
+  else
+    rm -f "$HOME/.zshrc.tmp"
+    fail "無法寫入 .zshrc，請檢查磁碟空間和權限"
+  fi
 fi
 
 
@@ -1148,6 +1200,7 @@ section "Starship"
 if menu_is_on "dev_starship"; then
   brew_pkg "starship"
   install -d -m 755 "$HOME/.config"
+  backup_if_exists "$HOME/.config/starship.toml"
   cat >"$HOME/.config/starship.toml" <<'STARSHIP'
 # Starship · Solarized Dark 風格
 format = """
@@ -1382,6 +1435,7 @@ if menu_is_on "app_vscode"; then
 
   VSCODE_SETTINGS_DIR="$HOME/Library/Application Support/Code/User"
   mkdir -p "$VSCODE_SETTINGS_DIR"
+  backup_if_exists "$VSCODE_SETTINGS_DIR/settings.json"
   cat >"$VSCODE_SETTINGS_DIR/settings.json" <<'VSCODE'
 {
   "workbench.colorTheme": "Solarized Dark",
@@ -1481,30 +1535,34 @@ if menu_is_on "dev_python"; then
     warn "pyenv 不可用，跳過 Python 版本安裝"
     add_manual "新終端機執行：pyenv install <version> && pyenv global <version>"
   else
-    # 用 awk 掃描完整清單取最後一個符合 3.x.x 純數字版本的穩定版
-    # 比 grep | tail 更健壯：支援三位數版號（3.14.x）並確保不匹配 rc/dev
+    # 偵測最新穩定版（取最後一個 3.x.x 純數字版本，支援 3.14.x 三位數版號）。
+    # 關鍵：|| true 放在命令替換「內部」，整個 $(...) 回傳值固定為 0，
+    # 故管線中段失敗（如 grep 無匹配）不會觸發 errexit/pipefail；
+    # 賦值本身必定綁定變數（即使為空字串），故 nounset 也不會中招。
+    # → 不需關閉嚴格模式，後續指令失敗仍會被正常捕捉，不會 silent fail。
     LATEST_PYTHON=$(pyenv install --list 2>/dev/null \
-      | awk '/^[[:space:]]+3\.[0-9]+\.[0-9]+[[:space:]]*$/{v=$1} END{if(v!="")print v}' \
-      || true)
+      | grep -E '^[[:space:]]+3\.[0-9]+\.[0-9]+[[:space:]]*$' \
+      | tail -1 \
+      | tr -d '[:space:]' || true)
 
     if [ -z "$LATEST_PYTHON" ]; then
       warn "找不到 Python 最新穩定版"
       add_manual "新終端機執行：pyenv install --list 找版本後安裝"
     else
       info "Python 最新穩定版：$LATEST_PYTHON"
-      if pyenv versions 2>/dev/null | grep -qF "$LATEST_PYTHON"; then
-        log "Python $LATEST_PYTHON 已安裝"
-      else
-        info "安裝 Python $LATEST_PYTHON（需幾分鐘）..."
-        if pyenv install "$LATEST_PYTHON"; then
+      info "安裝 Python ${LATEST_PYTHON}（已安裝則跳過）..."
+      if pyenv install --skip-existing "$LATEST_PYTHON"; then
+        # pyenv global 回傳值也要檢查，否則設定失敗會被誤報為成功（silent fail）
+        if pyenv global "$LATEST_PYTHON"; then
           log "Python $LATEST_PYTHON ✓"
         else
-          warn "Python 安裝失敗"
-          add_manual "新終端機執行：pyenv install $LATEST_PYTHON && pyenv global $LATEST_PYTHON"
+          warn "pyenv global 設定失敗"
+          add_manual "新終端機執行：pyenv global $LATEST_PYTHON"
         fi
+      else
+        warn "Python 安裝失敗"
+        add_manual "新終端機執行：pyenv install $LATEST_PYTHON && pyenv global $LATEST_PYTHON"
       fi
-      pyenv global "$LATEST_PYTHON" 2>/dev/null || true
-      log "Python 設定完成"
     fi
   fi
 
@@ -1542,6 +1600,22 @@ if menu_is_on "dev_node"; then
   fi
 fi
 
+# ── Claude CLI ──
+if menu_is_on "dev_claude_cli"; then
+  if command -v npm &>/dev/null; then
+    info "安裝 Claude CLI..."
+    if npm install -g @anthropic-ai/claude-code; then
+      log "Claude CLI ✓"
+    else
+      warn "Claude CLI 安裝失敗"
+      add_manual "新終端機執行：npm install -g @anthropic-ai/claude-code"
+    fi
+  else
+    warn "npm 不可用，跳過 Claude CLI 安裝"
+    add_manual "新終端機執行：npm install -g @anthropic-ai/claude-code"
+  fi
+fi
+
 # ── Git 設定 + SSH config + 全域 .gitignore ──
 if menu_is_on "dev_git"; then
   if [ -n "$GIT_NAME" ];  then git config --global user.name  "$GIT_NAME";  fi
@@ -1573,6 +1647,7 @@ if menu_is_on "dev_git"; then
   # SSH config
   # StrictHostKeyChecking accept-new：自動接受新主機金鑰（不接受已變更的），
   # 解決第一次連 GitHub 的 fingerprint 確認卡住問題
+  backup_if_exists "$HOME/.ssh/config"
   cat >"$HOME/.ssh/config" <<SSH_CONFIG
 # ── GitHub ─────────────────────────────────────
 Host github.com
@@ -1591,6 +1666,7 @@ SSH_CONFIG
   log "SSH config 完成"
 
   # 全域 .gitignore
+  backup_if_exists "$HOME/.gitignore_global"
   cat >"$HOME/.gitignore_global" <<'GITIGNORE'
 # ── macOS ──────────────────────────────────────
 .DS_Store
@@ -1655,12 +1731,9 @@ GITIGNORE
   log "全域 .gitignore 完成"
 
   if [ -n "$GIT_NAME" ]; then
-    log "Git 完成（$GIT_NAME / $GIT_EMAIL）"
+    log "Git 完成（${GIT_NAME} / ${GIT_EMAIL}）"
   fi
-
-  add_manual "1Password → 設定 → Developer → 開啟 SSH Agent"
-  add_manual "1Password 建立 SSH Key（Ed25519）→ 加入 GitHub"
-  add_manual "測試連線：ssh -T git@github.com"
+  # SSH Agent 手動項已移至區塊 23（統一排在清單最後）
 fi
 
 # ── Homebrew 自動更新（每週日凌晨 3:00）──
@@ -1770,8 +1843,7 @@ if menu_is_on "sys_tcc_whitelist"; then
     if _tcc_user_grant "kTCCServiceSystemPolicyAppBundles" "$OP_PATH" 1; then
       log "op → 取用其他 App 的資料 ✓"
     else
-      warn "op TCC 寫入失敗"
-      add_manual "允許「op」取用其他 App 的資料（系統提示時選允許）"
+      warn "op TCC 寫入失敗（首次使用時系統會自動詢問，選允許即可）"
     fi
   fi
 
@@ -1780,8 +1852,7 @@ if menu_is_on "sys_tcc_whitelist"; then
     if _tcc_user_grant "kTCCServiceSystemPolicyAppBundles" "com.anthropic.claude" 0; then
       log "Claude.app → 取用其他 App 的資料 ✓"
     else
-      warn "Claude.app TCC 寫入失敗"
-      add_manual "允許「Claude.app」取用其他 App 的資料（系統提示時選允許）"
+      warn "Claude.app TCC 寫入失敗（首次使用時系統會自動詢問，選允許即可）"
     fi
   fi
 
@@ -1791,8 +1862,7 @@ if menu_is_on "sys_tcc_whitelist"; then
     if _tcc_user_grant "kTCCServiceSystemPolicyAppBundles" "$CLAUDE_PATH" 1; then
       log "claude CLI → 取用其他 App 的資料 ✓"
     else
-      warn "claude CLI TCC 寫入失敗"
-      add_manual "允許「claude」取用其他 App 的資料（系統提示時選允許）"
+      warn "claude CLI TCC 寫入失敗（首次使用時系統會自動詢問，選允許即可）"
     fi
   fi
 
@@ -1825,20 +1895,180 @@ if menu_is_on "app_chrome";    then HAS_CHROME=true; fi
 if menu_is_on "app_brave";     then HAS_BRAVE=true;  fi
 if menu_is_on "app_1password"; then HAS_1PW=true;    fi
 
+# Logi 手動項已移至區塊 6 滑鼠鍵盤設定（清單第一條）
+
+# ── 以下三項固定排在清單最後（倒數第三、倒數第二、倒數第一）────────────
+
+# 倒數第三：1Password SSH Agent（需 Git 設定，原在 dev_git 區塊，移至此處統一排序）
+if menu_is_on "dev_git"; then
+  add_manual "1Password → 設定 → Developer → 開啟 SSH Agent。完成後執行測試「ssh -T git@github.com」。"
+fi
+
+# 倒數第二：1Password 瀏覽器設定（子項僅列出實際有安裝的瀏覽器）
 if [ "$HAS_1PW" = "true" ]; then
-  if [ "$HAS_CHROME" = "true" ]; then
-    add_manual "Chrome：安裝 1Password 擴充功能"
+  BROWSER_STEPS="1Password 瀏覽器設定（把 1Password 設為各瀏覽器預設密碼管理）："
+  # Chrome 與 Brave 同為 Chromium 核心、共用 Chrome 線上應用程式商店，設定步驟相同 → 合併一條
+  CHROMIUM_LABEL=""
+  if [ "$HAS_CHROME" = "true" ] && [ "$HAS_BRAVE" = "true" ]; then
+    CHROMIUM_LABEL="Chrome & Brave"
+  elif [ "$HAS_CHROME" = "true" ]; then
+    CHROMIUM_LABEL="Chrome"
+  elif [ "$HAS_BRAVE" = "true" ]; then
+    CHROMIUM_LABEL="Brave"
   fi
-  if [ "$HAS_BRAVE" = "true" ]; then
-    add_manual "Brave：安裝 1Password 擴充功能"
+  if [ -n "$CHROMIUM_LABEL" ]; then
+    BROWSER_STEPS+=$'\n     • '"${CHROMIUM_LABEL}"$'：安裝 1Password 擴充功能（Chrome 線上應用程式商店）→ 設定 → 自動填寫 → 關閉內建儲存/自動填寫密碼'
   fi
+  BROWSER_STEPS+=$'\n     • Safari：設定 → 擴充功能 啟用「1Password」；系統設定 → 一般 → 自動填寫與密碼 改用 1Password'
+  add_manual "$BROWSER_STEPS"
 fi
 
-if menu_is_on "app_logitech"; then
-  add_manual "Logi Options+：將 Lift Left 主按鍵對調為右手佈局"
+# 倒數第一：用 Google Chrome 把 Gmail / Google 日曆做成獨立 App
+if [ "$HAS_CHROME" = "true" ]; then
+  CHROME_APPS="用 Google Chrome 把 Gmail / Google 日曆做成獨立 App（開網站後點網址列的「安裝」圖示，或 ⋮ → 投放、儲存與分享 → 安裝頁面為應用程式）："
+  CHROME_APPS+=$'\n     • Gmail：mail.google.com'
+  CHROME_APPS+=$'\n     • Google 日曆：calendar.google.com'
+  add_manual "$CHROME_APPS"
 fi
 
-add_manual "Safari → File → Add to Dock → calendar.google.com（Google Calendar）"
+
+# ════════════════════════════════════════════════════════════════════
+#  區塊 23.5：手動步驟輸出成 HTML（重開機後自動於瀏覽器開啟）
+#
+#  終端機關閉後手動步驟就消失，故寫成 ~/Desktop 的 HTML 檔，並用一次性
+#  LaunchAgent 在下次登入（重開機）時自動於瀏覽器開啟，開完即自我移除。
+#  HTML 內含可勾選清單，勾選狀態存於 localStorage，重開瀏覽器也保留。
+# ════════════════════════════════════════════════════════════════════
+
+section "手動步驟清單"
+
+TODO_HTML="$HOME/Desktop/mac-setup-todo.html"
+
+# HTML 跳脫：& < >（手動步驟可能含 <version> 與 && 等字元），順序須先 &
+html_escape() {
+  printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
+}
+
+{
+  cat <<'HTML_HEAD'
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>macOS 設定 · 手動步驟</title>
+<style>
+  :root {
+    --bg:#002b36; --bg2:#073642; --fg:#93a1a1; --muted:#586e75;
+    --accent:#268bd2; --green:#859900;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:2rem 1rem; background:var(--bg); color:var(--fg);
+         font-family:-apple-system,"Helvetica Neue",sans-serif; line-height:1.6; }
+  .wrap { max-width:760px; margin:0 auto; }
+  h1 { color:#fdf6e3; font-size:1.5rem; margin:0 0 .25rem; }
+  .sub { color:var(--muted); margin:0 0 1.5rem; font-size:.95rem; }
+  .progress { background:var(--bg2); border-radius:8px; padding:.6rem 1rem;
+              margin-bottom:1.5rem; color:var(--green); font-weight:600; }
+  ul { list-style:none; padding:0; margin:0; }
+  li { background:var(--bg2); border-radius:8px; margin-bottom:.6rem;
+       padding:.9rem 1rem; display:flex; align-items:flex-start; gap:.75rem;
+       transition:opacity .2s; }
+  li.done { opacity:.45; }
+  li.done .txt { text-decoration:line-through; }
+  input[type=checkbox] { width:1.3rem; height:1.3rem; margin-top:.15rem;
+                         accent-color:var(--green); flex-shrink:0; cursor:pointer; }
+  .txt { flex:1; }
+  .num { color:var(--accent); font-weight:700; margin-right:.4rem; }
+  footer { color:var(--muted); font-size:.85rem; margin-top:2rem; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>✅ macOS 設定完成 — 還有幾步要手動完成</h1>
+<p class="sub">勾選後狀態會自動保存（重開瀏覽器也記得）。全部完成後可刪除此檔。</p>
+<div class="progress" id="progress"></div>
+<ul id="list">
+HTML_HEAD
+
+  if [ ${#MANUAL_STEPS[@]} -gt 0 ]; then
+    n=0
+    for i in "${!MANUAL_STEPS[@]}"; do
+      n=$((n + 1))
+      # 跳脫 & < > 後，把字串內的換行轉成 <br>，讓 sub-bullet（多行步驟）正確分行
+      esc=$(html_escape "${MANUAL_STEPS[$i]}" | awk 'NR>1{printf "<br>"} {printf "%s", $0}')
+      printf '  <li><input type="checkbox" data-k="%s"><span class="txt"><span class="num">%s.</span>%s</span></li>\n' "$n" "$n" "$esc"
+    done
+  else
+    printf '  <li><span class="txt">沒有需要手動完成的步驟 🎉</span></li>\n'
+  fi
+
+  cat <<'HTML_FOOT'
+</ul>
+<footer>由 setup.sh 產生</footer>
+</div>
+<script>
+  const KEY = "mac-setup-todo";
+  const saved = JSON.parse(localStorage.getItem(KEY) || "{}");
+  const boxes = [...document.querySelectorAll("input[type=checkbox]")];
+  function render() {
+    let done = 0;
+    boxes.forEach(b => {
+      const li = b.closest("li");
+      if (b.checked) { li.classList.add("done"); done++; }
+      else { li.classList.remove("done"); }
+    });
+    const total = boxes.length;
+    document.getElementById("progress").textContent =
+      total ? "進度：" + done + " / " + total + " 完成" : "";
+  }
+  boxes.forEach(b => {
+    if (saved[b.dataset.k]) b.checked = true;
+    b.addEventListener("change", () => {
+      saved[b.dataset.k] = b.checked;
+      localStorage.setItem(KEY, JSON.stringify(saved));
+      render();
+    });
+  });
+  render();
+</script>
+</body>
+</html>
+HTML_FOOT
+} > "$TODO_HTML"
+
+log "手動步驟已輸出：$TODO_HTML"
+
+# ── 一次性 LaunchAgent：下次登入（重開機）自動開啟，開完自我移除 ──────
+# 只寫入 plist 但「不」立即 bootstrap，留待下次登入由 launchd 自動載入並
+# 觸發 RunAtLoad，達成「重開機後才開啟」；plist 內的指令開檔後自我清除。
+LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
+mkdir -p "$LAUNCH_AGENT_DIR"
+cat >"$LAUNCH_AGENT_DIR/com.user.setup-todo.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.user.setup-todo</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>open "$HOME/Desktop/mac-setup-todo.html"; launchctl bootout "gui/$(id -u)/com.user.setup-todo" 2&gt;/dev/null; rm -f "$HOME/Library/LaunchAgents/com.user.setup-todo.plist"</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <false/>
+</dict>
+</plist>
+PLIST
+
+# 重跑 setup 時清掉尚未觸發的舊 agent（不重新 bootstrap，等下次登入）
+launchctl bootout "gui/$(id -u)/com.user.setup-todo" 2>/dev/null || true
+log "重開機後將自動於瀏覽器開啟手動步驟清單"
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1881,6 +2111,8 @@ if [ ${#MANUAL_STEPS[@]} -gt 0 ]; then
   for i in "${!MANUAL_STEPS[@]}"; do
     echo -e "  ${YELLOW}$((i + 1)).${NC} ${MANUAL_STEPS[$i]}"
   done
+  echo
+  echo -e "  ${DIM}（已存成 ${TODO_HTML}，重開機後會自動於瀏覽器開啟）${NC}"
 fi
 
 echo

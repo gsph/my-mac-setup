@@ -14,6 +14,8 @@ macOS 新帳號一鍵設定腳本。開好帳號後執行一次，完成所有�
 bash setup.sh
 ```
 
+也可以用 `sh setup.sh` 或 `./setup.sh`：腳本開頭會自動偵測並用 `/bin/bash` 重新執行，不會因為 `sh`（POSIX 模式）而出現 `-e` 亂碼或語法錯誤。
+
 **一行安裝**（從 GitHub 直接執行）
 
 ```bash
@@ -25,17 +27,18 @@ bash <(curl -fsSL https://raw.githubusercontent.com/gsph/my-mac-setup/main/setup
 ## 執行流程
 
 ```
-1. 輸入基本資訊
-   ├ 使用者名稱（顯示用）
-   ├ 電腦名稱（僅唯一管理員會被詢問）
-   ├ 外觀模式（淺色 / 深色）
-   └ Git 設定（user.name / email）
+1. 輸入基本資訊（每欄都帶入「目前系統值」當預設，直接 Enter 沿用）
+   ├ 使用者名稱（顯示用，預設 = 目前帳號全名）
+   ├ 外觀模式（預設 = 目前淺/深色）
+   ├ 電腦名稱（僅管理員會被詢問，預設 = 目前電腦名稱）
+   └ Git 設定（預設 = 目前 git config 的 user.name / email）
    ↓
 2. 互動選單勾選要安裝的模組（全部預設勾選）
    ↓
 3. 確認清單後全自動安裝
    ↓
-4. 完成後顯示需手動完成的步驟清單
+4. 完成後顯示需手動完成的步驟，並同步輸出成 HTML
+   （存到 ~/Desktop/mac-setup-todo.html，重開機後自動於瀏覽器開啟）
 ```
 
 -----
@@ -76,7 +79,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/gsph/my-mac-setup/main/setup
 |時區       |台北，網路自動同步                                   |
 |自動更新     |macOS 自動下載並安裝更新                             |
 |防火牆      |開啟，含隱身模式                                    |
-|FileVault|全磁碟加密，提示存入 Recovery Key                     |
+|隱私權白名單   |把 op / Claude / Ghostty 寫入 TCC，減少反覆權限彈窗（寫不進去時退回手動）|
+
+> 註：FileVault 已從腳本移除——Apple Silicon 新機在初次設定時通常就已開啟，且 recovery key 只在當初啟用時顯示一次、事後無法取回，交由系統處理即可。
 
 ### 應用程式
 
@@ -112,18 +117,26 @@ bash <(curl -fsSL https://raw.githubusercontent.com/gsph/my-mac-setup/main/setup
 **輸入法**
 
 - 鼠鬚管（Squirrel）+ 嗯蝦米（rime-liur）
+- 設定檔寫入後，由 LaunchAgent 在重開機登入時自動重啟 Squirrel 觸發部署
+
+**AI 工具**
+
+- Claude Desktop（桌面 App）
+- Claude CLI（`@anthropic-ai/claude-code`，需要 Node；勾選後會自動補勾 Node）
 
 ### Terminal & Shell
 
 |項目       |說明                                                     |
 |---------|-------------------------------------------------------|
 |Ghostty  |GPU 加速 Terminal，Solarized Dark，JetBrains Mono Nerd Font|
-|Oh My Zsh|Zsh 框架 + 10 個精選 plugin                                 |
+|Oh My Zsh|Zsh 框架 + 精選 plugin                                     |
 |Starship |現代 prompt，顯示 git 狀態、Python/Node 版本                     |
 |Vim      |vim-plug + 10 個 plugin，Solarized Dark                  |
 
 **Oh My Zsh Plugins**
-`git` · `macos` · `history` · `colored-man-pages` · `1password` · `nvm` · `zsh-autosuggestions` · `zsh-syntax-highlighting` · `you-should-use` · `zsh-autocomplete`
+`git` · `macos` · `history` · `colored-man-pages` · `1password`（裝了 op 才加）· `zsh-autosuggestions` · `zsh-syntax-highlighting` · `you-should-use` · `zsh-autocomplete`
+
+> nvm 不放進 plugin 列表：`.zshrc` 已手動 source `nvm.sh`，加 plugin 會雙重載入。
 
 **Vim Plugins**
 `vim-colors-solarized` · `vim-airline` · `vim-airline-themes` · `nerdtree` · `vim-gitgutter` · `vim-fugitive` · `ale` · `indentLine` · `vim-commentary` · `auto-pairs`
@@ -147,65 +160,129 @@ VS Code + `settings.json` + 6 個擴充功能：
 
 ## Dock 圖示順序
 
-只放有實際安裝的 App，沒裝的自動跳過：
+只放有實際安裝的 App，沒裝的自動跳過（Finder 由系統固定在最左側）：
 
 ```
 Finder · Safari · Chrome · Brave · Spotify
-Ghostty · VS Code · Obsidian · 系統設定
+Ghostty · VS Code · Claude · Obsidian · 系統設定
 ```
 
 -----
 
 ## 電腦名稱設定
 
-腳本會自動判斷是否詢問電腦名稱：
+只要**目前帳號在 `admin` 群組**就會詢問電腦名稱（電腦名稱是整台機器共用的設定）。
 
-**滿足兩個條件才會詢問**
-
-1. 目前帳號在 `admin` 群組
-1. 整台機器只有一個管理員
-
-兩個都成立才詢問，因為電腦名稱是整台機器共用的設定，多管理員的情況下隨意修改會干擾其他帳號。
-
-**詢問兩個名字**
+**詢問兩個名字**（皆帶入目前值當預設，Enter 沿用）
 
 |名稱  |用在哪                        |範例         |
 |----|---------------------------|-----------|
 |顯示名稱|Finder、Find My、AirDrop     |`Philip M4`|
 |網路名稱|終端機 prompt、`ping xxx.local`|`philip-m4`|
 
+> 網路名稱只接受字母/數字/連字號，非法字元會自動轉成連字號，避免 HostName 與 LocalHostName 不一致。
+
 -----
 
 ## 安裝後手動步驟
 
-腳本完成後會顯示完整清單，主要包含：
+腳本完成後會在終端機顯示清單，並輸出成 `~/Desktop/mac-setup-todo.html`（可勾選、進度自動保存，**重開機後自動於瀏覽器開啟**）。
 
-**輸入法**
+清單依「先把輸入裝置設好、後續操作才順手」的邏輯排序，固定順序大致如下（沒裝的項目自動略過）：
 
-- 系統設定 → 鍵盤 → 輸入來源 → 新增「鼠鬚管」
-- 選單列鼠鬚管圖示 → 重新部署（讓嗯蝦米方案生效）
+1. **Logi Options+** — 將 Lift Left 主按鍵對調為右手佈局
+2. **鼠鬚管** — 系統設定 → 鍵盤 → 輸入來源 → 新增「鼠鬚管」（重開機後加入）
+3. **螢幕保護** — 系統設定 → 鎖定畫面 → 要求密碼設為「立即」
+4. **Raycast** — Preferences → 快捷鍵設為 Option+Space
+5. **Ghostty** — 系統設定 → 隱私權與安全性 → 完整磁碟存取 → 新增 Ghostty
+6. **1Password SSH Agent** — 設定 → Developer → 開啟 SSH Agent，完成後執行 `ssh -T git@github.com` 驗證
+7. **1Password 瀏覽器設定** — 各瀏覽器裝擴充並改用 1Password（Chrome 與 Brave 共用 Chrome 線上應用程式商店，合併一條；Safari 走系統設定 → 自動填寫與密碼）
+8. **Google Chrome 網頁 App** — 用 Chrome 把 Gmail（mail.google.com）、Google 日曆（calendar.google.com）做成獨立 App
 
-**啟動器**
+-----
 
-- Raycast → Preferences → General → 快捷鍵設為 Option+Space
+## 安裝軟體逐項說明
 
-**1Password**
+每個可選軟體的簡易說明（Safari 為 macOS 內建，不需安裝）。
 
-- 設定 → Developer → 開啟 SSH Agent
-- 建立 SSH Key（Ed25519）→ 加入 GitHub
-- 測試：`ssh -T git@github.com`
-- Chrome / Brave 安裝 1Password 擴充功能（若有裝）
-- 確認 FileVault Recovery Key 存入 1Password（若有開啟）
+### 瀏覽器
 
-**滑鼠**
+|軟體          |說明                                   |
+|------------|-------------------------------------|
+|Google Chrome|Google 的瀏覽器，擴充生態最完整                  |
+|Brave       |基於 Chromium、內建廣告/追蹤阻擋的隱私瀏覽器           |
 
-- Logi Options+ 將 Lift Left 主按鍵對調為右手佈局
+### 密碼 / 安全
 
-**其他**
+|軟體            |說明                                            |
+|--------------|----------------------------------------------|
+|1Password     |密碼管理器（桌面 App），同時保管 SSH 金鑰                     |
+|1Password CLI（op）|命令列工具，讓終端機/腳本存取 1Password；SSH Agent 與 OMZ 1password plugin 需要它|
 
-- Finder → 設定 → 側邊欄，手動勾選 iCloud Drive、AirDrop、外接硬碟等
-- Safari → File → Add to Dock → calendar.google.com（Google Calendar）
-- Vim 若 plugin 未自動安裝，執行 `:PlugInstall`
+### 音樂
+
+|軟體     |說明      |
+|-------|--------|
+|Spotify|串流音樂服務|
+
+### 生產力
+
+|軟體            |說明                                         |
+|--------------|-------------------------------------------|
+|Rectangle     |用鍵盤快捷鍵把視窗排列/分割到螢幕各區                        |
+|Raycast       |Spotlight 替代品，啟動器 + 剪貼簿/視窗/腳本等擴充           |
+|Stats         |在選單列顯示 CPU / RAM / 網路 / 溫度等即時狀態            |
+|Pearcleaner   |移除 App 時連同設定檔/殘留一起清乾淨                      |
+|MonitorControl|用鍵盤調整外接螢幕亮度/音量（macOS 原生不支援外接螢幕亮度）         |
+|Obsidian      |本機 Markdown 筆記 / 知識庫                       |
+
+### 滑鼠
+
+|軟體          |說明                            |
+|------------|------------------------------|
+|Logi Options+|Logitech 滑鼠/鍵盤官方驅動，自訂按鍵與手勢   |
+
+### 輸入法
+
+|軟體           |說明                            |
+|-------------|------------------------------|
+|鼠鬚管（Squirrel）|macOS 上的 RIME 中文輸入法引擎         |
+|嘸蝦米（rime-liur）|建構於 RIME 之上的嘸蝦米輸入方案           |
+
+### 終端機 & Shell
+
+|軟體                     |說明                                  |
+|-----------------------|------------------------------------|
+|Ghostty                |GPU 加速、現代的終端機模擬器                    |
+|JetBrains Mono Nerd Font|等寬程式字型，內含 Nerd Font 圖示（給 prompt/編輯器）|
+|Oh My Zsh              |Zsh 設定框架，管理 plugin 與主題             |
+|Starship               |跨 shell 的現代 prompt，顯示 git/語言版本等    |
+|Vim                    |終端機文字編輯器，搭 vim-plug 管理外掛           |
+
+### 編輯器
+
+|軟體               |說明                |
+|-----------------|------------------|
+|Visual Studio Code|微軟的圖形化程式編輯器     |
+
+### AI 工具
+
+|軟體                              |說明                                |
+|--------------------------------|----------------------------------|
+|Claude Desktop                  |Anthropic Claude 的桌面 App          |
+|Claude CLI（@anthropic-ai/claude-code）|終端機裡的 Claude Code 代理工具（需 Node）|
+
+### 開發環境（CLI 工具與相依）
+
+|軟體                       |說明                                       |
+|-------------------------|-----------------------------------------|
+|Homebrew                 |macOS 套件管理器，本腳本用它安裝大部分軟體                 |
+|pyenv / pyenv-virtualenv |管理多個 Python 版本與虛擬環境                      |
+|Python（最新穩定版）            |由 pyenv 編譯安裝                             |
+|nvm                      |管理多個 Node.js 版本                          |
+|Node 24 LTS              |JavaScript 執行環境                          |
+|pnpm                     |快速、省空間的 Node 套件管理器                       |
+|openssl@3 / readline / sqlite / xz / zlib|pyenv 編譯 Python 所需的相依函式庫     |
 
 -----
 
@@ -213,33 +290,37 @@ Ghostty · VS Code · Obsidian · 系統設定
 
 ### 安全模式
 
-腳本使用 `set -euo pipefail`：
+腳本使用 `set -euo pipefail`：`-e` 任何指令失敗即停、`-u` 抓未定義變數、`-o pipefail` 抓 pipeline 失敗。`menu_is_on` 全部以 `if/then/fi` 呼叫，與 `set -e` 相容。
 
-- `-e`：任何指令失敗立即停止
-- `-u`：抓未定義變數
-- `-o pipefail`：抓 pipeline 中的失敗
+### Locale 與全形字解析（本次重點修正）
 
-`menu_is_on` 全部使用 `if/then/fi` 形式呼叫，與 `set -e` 完全相容。
+終端機常送出無效的 `LC_ALL=UTF-8`（"UTF-8" 不是合法 locale 名稱），會讓 bash 進入多位元組解析卻無對應 ctype 表，導致 **未加大括號的 `$VAR` 緊鄰全形字（如 `$VAR（`）把全形字位元組吃進變數名**，報 `unbound variable`。
+
+- **真正解法**：變數一律用 `${VAR}`，尤其後面緊接中文/全形標點時——本檔已全面採用。
+- 另外在開頭把 locale 正規化成 `en_US.UTF-8`（給 sed/grep/tr 等執行期工具用）；但實測這不能修掉「解析期」的全形字 bug，`${VAR}` 才是關鍵。
+
+### sh / POSIX 模式相容
+
+開頭偵測非 bash 或 POSIX 模式（`sh setup.sh` 會讓 bash 進 POSIX 模式、`echo -e` 失效），自動 `exec /bin/bash` 重新執行，避免 `-e` 亂碼。
+
+### sudo 維持
+
+確認後寫入暫時 NOPASSWD sudoers 規則（`/etc/sudoers.d/...`），整個安裝期間不再反覆要密碼；腳本結束（含異常）由 `trap` 自動移除。macOS 的 `tty_tickets` 讓背景 keepalive loop 無效，故改用此法。
+
+### 輸入帶預設值
+
+基本資訊每一欄都先讀目前系統值（`id -F`、`AppleInterfaceStyle`、`scutil --get`、`git config`）當預設，直接 Enter 沿用、要改才輸入（`ask_default` 輔助函數）。
 
 ### 防呆設計
 
-**選單引擎**：純 bash 實作，零外部依賴。標題不佔編號，數字輸入精確對應顯示編號。
-
-**Dock 圖示**：在所有套件安裝**之後**才設定，確保 App 已存在，`add_dock_app` 的路徑檢查才能成功。
-
-**SSH config**：`IdentityAgent` 使用 `$HOME` 完整路徑（SSH 不展開 `~`），註解獨立行（SSH 不支援行內註解）。
-
-**安裝函數**：`brew_pkg` / `brew_cask` / `zsh_plugin` 全部用 `if/else` + `return 0`，避免 `&&...||` 邏輯炸彈，安裝失敗不中止後續流程。
-
-**Pipeline 保護**：所有命令替換 `$(...)` 含 pipeline 都加 `|| true` 或 `|| echo 0`，避免 pipefail 下因中間段失敗中止腳本。
-
-**電池偵測**：用 `pmset -g batt | grep -q "InternalBattery"`，比 `system_profiler` 更可靠。
-
-**LaunchAgent**：用 `launchctl bootout` 先卸載（忽略錯誤）再 `bootstrap`，確保重複執行時也能套用最新 plist。
-
-**Vim colorscheme**：用 `silent! colorscheme solarized`，避免 plugin 還沒下載前報錯。
-
-**Oh My Zsh nvm plugin**：`NVM_DIR` 必須在 `source omz` 之前 export，否則 plugin 載入時找不到。
+- **選單引擎**：純 bash、零依賴，標題不佔編號。
+- **Dock 圖示**：在所有套件安裝**之後**才設定，確保 App 已存在。
+- **設定檔備份**：覆蓋 `.zshrc` / `.vimrc` / Ghostty / Starship / VS Code / SSH config / `.gitignore_global` 等前，先建立時間戳備份（`backup_if_exists`）。
+- **SSH config**：`IdentityAgent` 用 `$HOME` 完整路徑（SSH 不展開 `~`），註解獨立行。
+- **安裝函數**：`brew_pkg` / `brew_cask` / `zsh_plugin` 安裝失敗只警告、不中止後續流程。
+- **Pipeline 保護**：命令替換含 pipeline 都用 `|| true` 收尾並對結果保底，避免 pipefail 中止；`pyenv install --skip-existing` 取代易出錯的舊偵測邏輯。
+- **手動清單 → HTML**：步驟輸出成桌面 HTML（可勾選、localStorage 保存進度），一次性 LaunchAgent 在重開機登入時自動於瀏覽器開啟，開完自我移除。
+- **LaunchAgent**：先 `launchctl bootout` 再 `bootstrap`，重複執行也能套用最新 plist。
 
 -----
 
@@ -247,6 +328,5 @@ Ghostty · VS Code · Obsidian · 系統設定
 
 - 腳本不涉及帳號建立，請先手動建立目標帳號後再執行
 - 腳本不含任何個人資訊，所有私人資料在執行時輸入
-- 執行過程中可能多次要求 `sudo` 密碼
 - 大型套件安裝時間較長（Chrome、VS Code 等可能要幾分鐘），請耐心等待
-- 執行完畢後建議重新啟動電腦
+- 執行完畢後建議重新啟動電腦（部分系統設定與輸入法部署、手動清單 HTML 都在重開機後生效/開啟）
