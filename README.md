@@ -4,7 +4,7 @@ macOS 新帳號一鍵設定腳本。開好帳號後執行一次，完成所有�
 
 支援 **macOS Tahoe (15+)** · **Apple Silicon (M 系列)**
 
----
+-----
 
 ## 快速開始
 
@@ -17,10 +17,10 @@ bash setup.sh
 **一行安裝**（從 GitHub 直接執行）
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USER/mac-setup/main/setup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/gsph/mac-setup/setup.sh)
 ```
 
----
+-----
 
 ## 執行流程
 
@@ -38,84 +38,89 @@ bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USER/mac-setup/main/set
 4. 完成後顯示需手動完成的步驟清單
 ```
 
----
+-----
 
 ## 互動選單操作
 
-| 鍵 | 動作 |
-|---|---|
-| 數字 | 切換單一項目勾選 |
-| 空格分隔多個數字（例：`1 3 5`）| 一次切換多個 |
-| `A` | 全選 |
-| `N` | 全不選 |
-| `Enter` | 確認進入下一步 |
+|鍵                  |動作      |
+|-------------------|--------|
+|數字                 |切換單一項目勾選|
+|空格分隔多個數字（例：`1 3 5`）|一次切換多個  |
+|`A`                |全選      |
+|`N`                |全不選     |
+|`Enter`            |確認進入下一步 |
 
----
+-----
 
 ## 模組總覽
 
 ### 系統設定（19 項）
 
-| 項目 | 說明 |
-|---|---|
-| 語言 | 繁體中文第一、英文第二，UTF-8 |
-| 按鍵速度 | 75% 快（KeyRepeat=2, InitialKeyRepeat=25）|
-| 自然捲動 | 關閉，恢復傳統方向 |
-| 觸控板 | 點一下來選按 |
-| Dock | 底部、自動隱藏、縮放效果 |
-| 螢幕保護 | 20 分鐘啟動，睡眠後立即要求密碼 |
-| 熱角 | 左上=螢幕保護 / 右上=桌面 / 左下=應用程式視窗 / 右下=指揮中心 |
-| 截圖 | 存入 `~/Desktop/Screenshots`，PNG，無陰影 |
-| Finder | 路徑列、狀態列、副檔名、清單檢視、Home 為新視窗預設 |
-| 選單列 | 藍芽、音量、電池百分比（自動偵測有無電池）|
-| 桌面 | 素色岩石色 |
-| 鍵盤 | 外接鍵盤 Command ↔ Option 互換（LaunchAgent 開機自動套用）|
-| Spotlight | 停用，輸入法切換改為 Command+Space |
-| 顯示器 | 關閉選單列鏡象輸出選項 |
-| .DS_Store | 不寫入網路磁碟和 USB 外接硬碟 |
-| 時區 | 台北，網路自動同步 |
-| 自動更新 | macOS 自動下載並安裝更新 |
-| 防火牆 | 開啟，含隱身模式 |
-| FileVault | 全磁碟加密，提示存入 Recovery Key |
+|項目       |說明                                          |
+|---------|--------------------------------------------|
+|語言       |繁體中文第一、英文第二，UTF-8                           |
+|按鍵速度     |75% 快（KeyRepeat=2, InitialKeyRepeat=25）     |
+|自然捲動     |關閉，恢復傳統方向                                   |
+|觸控板      |點一下來選按                                      |
+|Dock     |底部、自動隱藏、縮放效果                                |
+|螢幕保護     |20 分鐘啟動，睡眠後立即要求密碼                           |
+|熱角       |左上=螢幕保護 / 右上=桌面 / 左下=應用程式視窗 / 右下=指揮中心       |
+|截圖       |存入 `~/Desktop/Screenshots`，PNG，無陰影          |
+|Finder   |路徑列、狀態列、副檔名、清單檢視、Home 為新視窗預設                |
+|選單列      |藍芽、音量、電池百分比（自動偵測有無電池）                       |
+|桌面       |素色岩石色                                       |
+|鍵盤       |外接鍵盤 Command ↔ Option 互換（LaunchAgent 開機自動套用）|
+|Spotlight|停用，輸入法切換改為 Command+Space                    |
+|顯示器      |關閉選單列鏡象輸出選項                                 |
+|.DS_Store|不寫入網路磁碟和 USB 外接硬碟                           |
+|時區       |台北，網路自動同步                                   |
+|自動更新     |macOS 自動下載並安裝更新                             |
+|防火牆      |開啟，含隱身模式                                    |
+|FileVault|全磁碟加密，提示存入 Recovery Key                     |
 
 ### 應用程式
 
 **瀏覽器**
+
 - Google Chrome · Brave
 - Safari 為內建，自動加入 Dock
 
 **密碼 / 安全**
+
 - 1Password（桌面 App）
 - 1Password CLI（`op` 指令，Oh My Zsh plugin 和 SSH agent 需要）
 
 **音樂**
+
 - Spotify
 
 **生產力**
 
-| App | 說明 |
-|---|---|
-| Rectangle | 視窗管理，鍵盤快速排列 |
-| Raycast | 啟動器，取代 Spotlight（手動設定快捷鍵 Option+Space）|
-| Stats | Menubar 顯示 CPU / RAM / 網路 |
-| Pearcleaner | App 完整移除，不留殘檔 |
-| MonitorControl | 外接螢幕亮度控制 |
-| Obsidian | Markdown 知識庫 |
+|App           |說明                                    |
+|--------------|--------------------------------------|
+|Rectangle     |視窗管理，鍵盤快速排列                           |
+|Raycast       |啟動器，取代 Spotlight（手動設定快捷鍵 Option+Space）|
+|Stats         |Menubar 顯示 CPU / RAM / 網路             |
+|Pearcleaner   |App 完整移除，不留殘檔                         |
+|MonitorControl|外接螢幕亮度控制                              |
+|Obsidian      |Markdown 知識庫                          |
 
 **滑鼠**
+
 - Logi Options+（Logitech 滑鼠驅動）
 
 **輸入法**
+
 - 鼠鬚管（Squirrel）+ 嗯蝦米（rime-liur）
 
 ### Terminal & Shell
 
-| 項目 | 說明 |
-|---|---|
-| Ghostty | GPU 加速 Terminal，Solarized Dark，JetBrains Mono Nerd Font |
-| Oh My Zsh | Zsh 框架 + 10 個精選 plugin |
-| Starship | 現代 prompt，顯示 git 狀態、Python/Node 版本 |
-| Vim | vim-plug + 10 個 plugin，Solarized Dark |
+|項目       |說明                                                     |
+|---------|-------------------------------------------------------|
+|Ghostty  |GPU 加速 Terminal，Solarized Dark，JetBrains Mono Nerd Font|
+|Oh My Zsh|Zsh 框架 + 10 個精選 plugin                                 |
+|Starship |現代 prompt，顯示 git 狀態、Python/Node 版本                     |
+|Vim      |vim-plug + 10 個 plugin，Solarized Dark                  |
 
 **Oh My Zsh Plugins**
 `git` · `macos` · `history` · `colored-man-pages` · `1password` · `nvm` · `zsh-autosuggestions` · `zsh-syntax-highlighting` · `you-should-use` · `zsh-autocomplete`
@@ -130,15 +135,15 @@ VS Code + `settings.json` + 6 個擴充功能：
 
 ### 開發環境
 
-| 項目 | 說明 |
-|---|---|
-| pyenv + pyenv-virtualenv | Python 版本管理，自動安裝最新穩定版 |
-| nvm + Node 24 LTS + pnpm | Node 版本管理 |
-| Git | 全域設定、global `.gitignore`、SSH config |
-| 1Password SSH Agent | SSH 私鑰存於 1Password，git push 用 Touch ID 驗證 |
-| Homebrew 自動更新 | LaunchAgent 每週日凌晨 3:00 執行 update + upgrade + cleanup |
+|項目                      |說明                                                  |
+|------------------------|----------------------------------------------------|
+|pyenv + pyenv-virtualenv|Python 版本管理，自動安裝最新穩定版                               |
+|nvm + Node 24 LTS + pnpm|Node 版本管理                                           |
+|Git                     |全域設定、global `.gitignore`、SSH config                 |
+|1Password SSH Agent     |SSH 私鑰存於 1Password，git push 用 Touch ID 驗證           |
+|Homebrew 自動更新           |LaunchAgent 每週日凌晨 3:00 執行 update + upgrade + cleanup|
 
----
+-----
 
 ## Dock 圖示順序
 
@@ -149,7 +154,7 @@ Finder · Safari · Chrome · Brave · Spotify
 Ghostty · VS Code · Obsidian · 系統設定
 ```
 
----
+-----
 
 ## 電腦名稱設定
 
@@ -158,31 +163,34 @@ Ghostty · VS Code · Obsidian · 系統設定
 **滿足兩個條件才會詢問**
 
 1. 目前帳號在 `admin` 群組
-2. 整台機器只有一個管理員
+1. 整台機器只有一個管理員
 
 兩個都成立才詢問，因為電腦名稱是整台機器共用的設定，多管理員的情況下隨意修改會干擾其他帳號。
 
 **詢問兩個名字**
 
-| 名稱 | 用在哪 | 範例 |
-|---|---|---|
-| 顯示名稱 | Finder、Find My、AirDrop | `Philip M4` |
-| 網路名稱 | 終端機 prompt、`ping xxx.local` | `philip-m4` |
+|名稱  |用在哪                        |範例         |
+|----|---------------------------|-----------|
+|顯示名稱|Finder、Find My、AirDrop     |`Philip M4`|
+|網路名稱|終端機 prompt、`ping xxx.local`|`philip-m4`|
 
----
+-----
 
 ## 安裝後手動步驟
 
 腳本完成後會顯示完整清單，主要包含：
 
 **輸入法**
+
 - 系統設定 → 鍵盤 → 輸入來源 → 新增「鼠鬚管」
 - 選單列鼠鬚管圖示 → 重新部署（讓嗯蝦米方案生效）
 
 **啟動器**
+
 - Raycast → Preferences → General → 快捷鍵設為 Option+Space
 
 **1Password**
+
 - 設定 → Developer → 開啟 SSH Agent
 - 建立 SSH Key（Ed25519）→ 加入 GitHub
 - 測試：`ssh -T git@github.com`
@@ -190,19 +198,23 @@ Ghostty · VS Code · Obsidian · 系統設定
 - 確認 FileVault Recovery Key 存入 1Password（若有開啟）
 
 **滑鼠**
+
 - Logi Options+ 將 Lift Left 主按鍵對調為右手佈局
 
 **其他**
+
 - Finder → 設定 → 側邊欄，手動勾選 iCloud Drive、AirDrop、外接硬碟等
 - Safari → File → Add to Dock → calendar.google.com（Google Calendar）
 - Vim 若 plugin 未自動安裝，執行 `:PlugInstall`
 
----
+-----
 
 ## 技術設計重點
 
 ### 安全模式
+
 腳本使用 `set -euo pipefail`：
+
 - `-e`：任何指令失敗立即停止
 - `-u`：抓未定義變數
 - `-o pipefail`：抓 pipeline 中的失敗
@@ -229,7 +241,7 @@ Ghostty · VS Code · Obsidian · 系統設定
 
 **Oh My Zsh nvm plugin**：`NVM_DIR` 必須在 `source omz` 之前 export，否則 plugin 載入時找不到。
 
----
+-----
 
 ## 注意事項
 
