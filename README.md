@@ -123,6 +123,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/gsph/my-mac-setup/main/setup
 
 - Claude Desktop（桌面 App）
 - Claude CLI（`@anthropic-ai/claude-code`，需要 Node；勾選後會自動補勾 Node）
+- Ollama（在本機跑開源 LLM 的執行器，`brew install ollama`）
 
 ### Terminal & Shell
 
@@ -272,6 +273,7 @@ Ghostty · VS Code · Claude · Obsidian · 系統設定
 |--------------------------------|----------------------------------|
 |Claude Desktop                  |Anthropic Claude 的桌面 App          |
 |Claude CLI（@anthropic-ai/claude-code）|終端機裡的 Claude Code 代理工具（需 Node）|
+|Ollama                          |在本機下載並執行開源 LLM（Llama、Mistral 等）的執行器     |
 
 ### 開發環境（CLI 工具與相依）
 

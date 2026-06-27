@@ -457,6 +457,7 @@ menu_add "app_vscode"     "VS Code + settings.json + 擴充功能"
 menu_add "__SECTION__AI 工具" ""
 menu_add "app_claude_desktop"  "Claude Desktop"
 menu_add "dev_claude_cli"      "Claude CLI（@anthropic-ai/claude-code，需要 Node）"
+menu_add "dev_ollama"          "Ollama（本機 LLM 執行器）"
 
 menu_add "__SECTION__開發環境" ""
 menu_add "dev_python"          "pyenv + pyenv-virtualenv（Python 最新穩定版）"
@@ -951,6 +952,10 @@ fi
 
 if menu_is_on "dev_docker"; then
   brew_cask "docker-desktop"
+fi
+
+if menu_is_on "dev_ollama"; then
+  brew_pkg "ollama"
 fi
 
 if menu_is_on "app_ghostty"; then
