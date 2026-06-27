@@ -4,7 +4,7 @@
 #  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  新帳號開好後執行，一次完成系統設定、軟體安裝和開發環境建置
 #
-#  支援：macOS Tahoe (15+) · Apple Silicon (M 系列)
+#  支援：macOS Tahoe (26+) · Apple Silicon (M 系列)
 #
 #  執行方式（推薦本機，互動更穩定）：
 #    bash setup.sh
@@ -217,8 +217,6 @@ brew_cask() {
 #  同時解決路徑含 & 字元的 XML 跳脫問題
 # ════════════════════════════════════════════════════════════════════
 
-DOCK_PLIST="$HOME/Library/Preferences/com.apple.dock.plist"
-
 add_dock_app() {
   local app_path=$1
   [[ -e "$app_path" ]] || return 0
@@ -276,7 +274,7 @@ echo
 echo -e "${BOLD}${CYAN}"
 echo "  ╔══════════════════════════════════════════╗"
 echo "  ║        macOS Setup Script                ║"
-echo "  ║        Tahoe (15+) · Apple Silicon       ║"
+echo "  ║        Tahoe (26+) · Apple Silicon       ║"
 echo "  ╚══════════════════════════════════════════╝"
 echo -e "${NC}"
 
@@ -375,6 +373,7 @@ menu_add "sys_timezone"        "時區：台北（網路自動同步）"
 menu_add "sys_autoupdate"      "macOS 自動更新"
 menu_add "sys_firewall"        "防火牆開啟"
 menu_add "sys_filevault"       "FileVault 磁碟加密"
+menu_add "sys_tcc_whitelist"   "隱私權白名單（op / Claude / Ghostty FDA，免反覆彈窗）"
 
 menu_add "__SECTION__瀏覽器" ""
 menu_add "app_chrome"     "Google Chrome"
@@ -473,8 +472,8 @@ info "架構：$ARCH"
 if [[ "$ARCH" != "arm64" ]]; then
   warn "此腳本針對 Apple Silicon 設計，目前架構為 $ARCH"
 fi
-if [[ "$MACOS_VERSION" != 15.* ]] && [[ "$MACOS_VERSION" != 16.* ]]; then
-  warn "建議使用 macOS Tahoe (15+)，目前版本 $MACOS_VERSION"
+if [[ "$MACOS_VERSION" != 26.* ]]; then
+  warn "建議使用 macOS Tahoe (26+)，目前版本 $MACOS_VERSION"
 fi
 
 if [ -n "$COMPUTER_DISPLAY_NAME" ] && [ -n "$COMPUTER_NETWORK_NAME" ]; then
@@ -768,6 +767,11 @@ if menu_is_on "sys_filevault"; then
     echo -e "${BOLD}${RED}  ══════════════════════════════════════════${NC}"
     echo
     read -rp "  已存入 1Password？[y/N] " FV_CONFIRM
+    if [[ ! "$FV_CONFIRM" =~ ^[Yy]$ ]]; then
+      warn "請務必在繼續前將 Recovery Key 存入 1Password，否則遺失後無法解鎖磁碟"
+      read -rp "  確認已存入，繼續？[y/N] " FV_CONFIRM2
+      [[ ! "$FV_CONFIRM2" =~ ^[Yy]$ ]] && fail "請先存入 Recovery Key 再繼續"
+    fi
     log "FileVault 已開啟"
   fi
   add_manual "確認 FileVault Recovery Key 已存入 1Password"
@@ -797,10 +801,6 @@ if menu_is_on "app_logitech";      then brew_cask "logi-options+";    fi
 
 if menu_is_on "app_vscode"; then
   brew_cask "visual-studio-code"
-  # 安裝後立即把 VS Code 的 CLI bin 加入當前 session 的 PATH，
-  # 避免「冷啟動」問題（新安裝的 code 指令因 PATH 快取而無法立即呼叫）
-  export PATH="$PATH:/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
-  hash -r 2>/dev/null || true
 fi
 
 if menu_is_on "app_ghostty"; then
@@ -850,11 +850,11 @@ if menu_is_on "app_rime"; then
     log "嗯蝦米已存在"
   else
     info "安裝嗯蝦米..."
-    if curl -fsSL https://git.io/rime_liur_installer | bash; then
+    if curl -fsSL https://raw.githubusercontent.com/hsuanyi-chou/rime-liur/master/rime_liur_installer.sh | bash; then
       log "嗯蝦米完成"
     else
       warn "嗯蝦米自動安裝失敗"
-      add_manual "手動執行：curl -fsSL https://git.io/rime_liur_installer | bash"
+      add_manual "手動執行：curl -fsSL https://raw.githubusercontent.com/hsuanyi-chou/rime-liur/master/rime_liur_installer.sh | bash"
     fi
   fi
 
@@ -1642,7 +1642,100 @@ log "所有套件已更新"
 
 
 # ════════════════════════════════════════════════════════════════════
-#  區塊 22：手動步驟彙整
+#  區塊 22：隱私權白名單（TCC）
+#
+#  直接寫入 ~/Library/.../TCC.db，讓 op、Claude CLI、Claude.app
+#  的「取用其他 App 的資料」不再每次重複彈窗。
+#
+#  kTCCServiceSystemPolicyAppBundles = "取用其他 App 的資料"
+#  kTCCServiceSystemPolicyAllFiles   = 完整磁碟存取（FDA）
+#
+#  user 層 TCC.db 不需要 FDA 就能寫入（自己的 ~/Library）
+#  system 層 TCC.db（FDA）需要 sudo，且本身需 FDA 才能寫入；
+#  如果失敗改用 add_manual 通知手動補設
+# ════════════════════════════════════════════════════════════════════
+
+if menu_is_on "sys_tcc_whitelist"; then
+  section "隱私權白名單"
+
+  USER_TCC="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+  SYS_TCC="/Library/Application Support/com.apple.TCC/TCC.db"
+  TCC_NOW=$(date +%s)
+
+  # 寫入 user 層 TCC：kTCCServiceSystemPolicyAppBundles
+  # client_type 0=bundle ID, 1=可執行檔路徑
+  _tcc_user_grant() {
+    local service=$1 client=$2 client_type=$3
+    # 已是允許就跳過
+    local cur
+    cur=$(sqlite3 "$USER_TCC" \
+      "SELECT auth_value FROM access WHERE service='$service' AND client='$client';" \
+      2>/dev/null || true)
+    [[ "$cur" == "2" ]] && return 0
+    sqlite3 "$USER_TCC" \
+      "INSERT OR REPLACE INTO access
+       (service,client,client_type,auth_value,auth_reason,auth_version,
+        csreq,policy_id,indirect_object_identifier_type,
+        indirect_object_identifier,indirect_object_code_identity,flags,last_modified)
+       VALUES
+       ('$service','$client',$client_type,2,4,1,
+        NULL,NULL,0,'UNUSED',NULL,0,$TCC_NOW);" 2>/dev/null
+  }
+
+  # ── op CLI ──
+  if menu_is_on "app_1password" && command -v op &>/dev/null; then
+    OP_PATH=$(command -v op)
+    if _tcc_user_grant "kTCCServiceSystemPolicyAppBundles" "$OP_PATH" 1; then
+      log "op → 取用其他 App 的資料 ✓"
+    else
+      warn "op TCC 寫入失敗"
+      add_manual "允許「op」取用其他 App 的資料（系統提示時選允許）"
+    fi
+  fi
+
+  # ── Claude.app ──
+  if [[ -d "/Applications/Claude.app" ]]; then
+    if _tcc_user_grant "kTCCServiceSystemPolicyAppBundles" "com.anthropic.claude" 0; then
+      log "Claude.app → 取用其他 App 的資料 ✓"
+    else
+      warn "Claude.app TCC 寫入失敗"
+      add_manual "允許「Claude.app」取用其他 App 的資料（系統提示時選允許）"
+    fi
+  fi
+
+  # ── claude CLI ──
+  if command -v claude &>/dev/null; then
+    CLAUDE_PATH=$(command -v claude)
+    if _tcc_user_grant "kTCCServiceSystemPolicyAppBundles" "$CLAUDE_PATH" 1; then
+      log "claude CLI → 取用其他 App 的資料 ✓"
+    else
+      warn "claude CLI TCC 寫入失敗"
+      add_manual "允許「claude」取用其他 App 的資料（系統提示時選允許）"
+    fi
+  fi
+
+  # ── Ghostty：完整磁碟存取（system 層，讓子程序不必逐一詢問）──
+  # 需要終端機本身已有 FDA 才能寫入 system TCC.db
+  if menu_is_on "app_ghostty"; then
+    if sudo sqlite3 "$SYS_TCC" \
+      "INSERT OR REPLACE INTO access
+       (service,client,client_type,auth_value,auth_reason,auth_version,
+        csreq,policy_id,indirect_object_identifier_type,
+        indirect_object_identifier,indirect_object_code_identity,flags,last_modified)
+       VALUES
+       ('kTCCServiceSystemPolicyAllFiles','com.mitchellh.ghostty',0,2,4,1,
+        NULL,NULL,0,'UNUSED',NULL,0,$TCC_NOW);" 2>/dev/null; then
+      log "Ghostty → 完整磁碟存取 ✓"
+    else
+      warn "Ghostty FDA 無法自動設定（終端機本身需先有 FDA 才能寫入）"
+      add_manual "系統設定 → 隱私權與安全性 → 完整磁碟存取 → 新增 Ghostty"
+    fi
+  fi
+fi
+
+
+# ════════════════════════════════════════════════════════════════════
+#  區塊 23：手動步驟彙整
 # ════════════════════════════════════════════════════════════════════
 
 HAS_CHROME=false; HAS_BRAVE=false; HAS_1PW=false
@@ -1667,7 +1760,7 @@ add_manual "Safari → File → Add to Dock → calendar.google.com（Google Cal
 
 
 # ════════════════════════════════════════════════════════════════════
-#  區塊 23：套用所有系統設定
+#  區塊 24：套用所有系統設定
 # ════════════════════════════════════════════════════════════════════
 
 section "套用設定"
@@ -1678,7 +1771,7 @@ log "系統設定已套用"
 
 
 # ════════════════════════════════════════════════════════════════════
-#  區塊 24：完成畫面
+#  區塊 25：完成畫面
 # ════════════════════════════════════════════════════════════════════
 
 clear
