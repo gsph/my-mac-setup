@@ -307,6 +307,10 @@ Ghostty · VS Code · Claude · Obsidian · 系統設定
 
 確認後寫入暫時 NOPASSWD sudoers 規則（`/etc/sudoers.d/...`），整個安裝期間不再反覆要密碼；腳本結束（含異常）由 `trap` 自動移除。macOS 的 `tty_tickets` 讓背景 keepalive loop 無效，故改用此法。
 
+### 一般使用者（非管理員）相容
+
+非管理員帳號沒有 `sudo` 權限。腳本不再因此整個失效：偵測到不是管理員（或拿不到 sudo）時，會自動略過所有需要系統權限的步驟（電腦名稱、時區、自動更新、防火牆、Ghostty 完整磁碟存取），其餘使用者層的安裝（Homebrew、套件、dotfiles、個人偏好）照常進行，並把略過的系統設定列入最後的「手動補完清單」。
+
 ### 輸入帶預設值
 
 基本資訊每一欄都先讀目前系統值（`id -F`、`AppleInterfaceStyle`、`scutil --get`、`git config`）當預設，直接 Enter 沿用、要改才輸入（`ask_default` 輔助函數）。
