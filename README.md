@@ -152,6 +152,7 @@ VS Code + `settings.json` + 6 個擴充功能：
 |------------------------|----------------------------------------------------|
 |pyenv + pyenv-virtualenv|Python 版本管理，自動安裝最新穩定版                               |
 |nvm + Node 24 LTS + pnpm|Node 版本管理                                           |
+|Docker Desktop          |容器執行環境（cask 安裝，需管理員權限）                              |
 |Git                     |全域設定、global `.gitignore`、SSH config                 |
 |1Password SSH Agent     |SSH 私鑰存於 1Password，git push 用 Touch ID 驗證           |
 |Homebrew 自動更新           |LaunchAgent 每週日凌晨 3:00 執行 update + upgrade + cleanup|
@@ -282,6 +283,7 @@ Ghostty · VS Code · Claude · Obsidian · 系統設定
 |nvm                      |管理多個 Node.js 版本                          |
 |Node 24 LTS              |JavaScript 執行環境                          |
 |pnpm                     |快速、省空間的 Node 套件管理器                       |
+|Docker Desktop           |在 macOS 上跑容器（Docker Engine + CLI + GUI，cask 安裝）   |
 |openssl@3 / readline / sqlite / xz / zlib|pyenv 編譯 Python 所需的相依函式庫     |
 
 -----
