@@ -2,7 +2,7 @@
 
 macOS 新帳號一鍵設定腳本。開好帳號後執行一次，完成所有系統設定、軟體安裝和開發環境建置。
 
-支援 **macOS Tahoe (15+)** · **Apple Silicon (M 系列)**
+支援 **macOS Tahoe (26+)** · **Apple Silicon (M 系列)**
 
 -----
 
@@ -17,7 +17,7 @@ bash setup.sh
 **一行安裝**（從 GitHub 直接執行）
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/gsph/mac-setup/setup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/gsph/my-mac-setup/main/setup.sh)
 ```
 
 -----
@@ -63,7 +63,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/gsph/mac-setup/setup.sh)
 |自然捲動     |關閉，恢復傳統方向                                   |
 |觸控板      |點一下來選按                                      |
 |Dock     |底部、自動隱藏、縮放效果                                |
-|螢幕保護     |20 分鐘啟動，睡眠後立即要求密碼                           |
+|螢幕保護     |20 分鐘啟動（密碼鎖定需手動設定，macOS 26 已移除舊 API）    |
 |熱角       |左上=螢幕保護 / 右上=桌面 / 左下=應用程式視窗 / 右下=指揮中心       |
 |截圖       |存入 `~/Desktop/Screenshots`，PNG，無陰影          |
 |Finder   |路徑列、狀態列、副檔名、清單檢視、Home 為新視窗預設                |
@@ -235,7 +235,7 @@ Ghostty · VS Code · Obsidian · 系統設定
 
 **電池偵測**：用 `pmset -g batt | grep -q "InternalBattery"`，比 `system_profiler` 更可靠。
 
-**LaunchAgent**：優先用 macOS 13+ 的 `launchctl bootstrap`，舊版 `launchctl load` 為 fallback。
+**LaunchAgent**：用 `launchctl bootout` 先卸載（忽略錯誤）再 `bootstrap`，確保重複執行時也能套用最新 plist。
 
 **Vim colorscheme**：用 `silent! colorscheme solarized`，避免 plugin 還沒下載前報錯。
 
