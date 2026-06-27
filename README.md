@@ -123,6 +123,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/gsph/my-mac-setup/main/setup
 
 - Claude Desktop（桌面 App）
 - Claude CLI（`@anthropic-ai/claude-code`，需要 Node；勾選後會自動補勾 Node）
+- Ollama（在本機跑開源 LLM 的執行器，`brew install ollama`）
 
 ### Terminal & Shell
 
@@ -152,6 +153,7 @@ VS Code + `settings.json` + 6 個擴充功能：
 |------------------------|----------------------------------------------------|
 |pyenv + pyenv-virtualenv|Python 版本管理，自動安裝最新穩定版                               |
 |nvm + Node 24 LTS + pnpm|Node 版本管理                                           |
+|Docker Desktop          |容器執行環境（cask 安裝，需管理員權限）                              |
 |Git                     |全域設定、global `.gitignore`、SSH config                 |
 |1Password SSH Agent     |SSH 私鑰存於 1Password，git push 用 Touch ID 驗證           |
 |Homebrew 自動更新           |LaunchAgent 每週日凌晨 3:00 執行 update + upgrade + cleanup|
@@ -271,6 +273,7 @@ Ghostty · VS Code · Claude · Obsidian · 系統設定
 |--------------------------------|----------------------------------|
 |Claude Desktop                  |Anthropic Claude 的桌面 App          |
 |Claude CLI（@anthropic-ai/claude-code）|終端機裡的 Claude Code 代理工具（需 Node）|
+|Ollama                          |在本機下載並執行開源 LLM（Llama、Mistral 等）的執行器     |
 
 ### 開發環境（CLI 工具與相依）
 
@@ -282,6 +285,7 @@ Ghostty · VS Code · Claude · Obsidian · 系統設定
 |nvm                      |管理多個 Node.js 版本                          |
 |Node 24 LTS              |JavaScript 執行環境                          |
 |pnpm                     |快速、省空間的 Node 套件管理器                       |
+|Docker Desktop           |在 macOS 上跑容器（Docker Engine + CLI + GUI，cask 安裝）   |
 |openssl@3 / readline / sqlite / xz / zlib|pyenv 編譯 Python 所需的相依函式庫     |
 
 -----
