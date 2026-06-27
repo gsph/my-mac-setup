@@ -18,9 +18,17 @@
 set -euo pipefail
 
 # ── stdin 修正（bash <(curl ...) 模式下 stdin 被管道佔用）──────────
-# 在任何 read 之前把 stdin 重導向到終端機，讓互動式輸入正常運作
+# 在任何 read 之前把 stdin 重導向到終端機，讓互動式輸入正常運作。
+# 注意：/dev/tty 存在但無控制終端時 exec 會失敗（ENXIO），故加 || true 不讓 set -e 中止。
 if [[ ! -t 0 ]] && [[ -e /dev/tty ]]; then
-  exec </dev/tty
+  exec </dev/tty 2>/dev/null || true
+fi
+
+# 本腳本全程需要互動輸入；若仍無可用終端機（CI / cron / 無 tty 容器）就明確中止，
+# 而非在第一個 read 時無訊息退出
+if [[ ! -t 0 ]]; then
+  echo "錯誤：此腳本需要互動式終端機，請用「bash setup.sh」在終端機中執行" >&2
+  exit 1
 fi
 
 
@@ -295,13 +303,13 @@ if groups | grep -q "admin"; then
   IS_ADMIN=true
 fi
 
+# grep -c 直接輸出單一整數；|| true 防止無匹配時 pipefail 中止；再以 :-0 補預設
+# （避免舊寫法在 dscl 失敗時因 pipefail + 尾端 || echo 0 而捕捉到 "0\n0"）
 ADMIN_COUNT=$(dscl . -read /Groups/admin GroupMembership 2>/dev/null \
   | tr ' ' '\n' \
-  | grep -v "^GroupMembership:" \
-  | grep -v "^$" \
-  | wc -l \
-  | tr -d ' ' \
-  || echo 0)
+  | grep -cvE "^(GroupMembership:|$)" \
+  || true)
+ADMIN_COUNT=${ADMIN_COUNT:-0}
 IS_ONLY_ADMIN=false
 if [ "$ADMIN_COUNT" = "1" ]; then
   IS_ONLY_ADMIN=true
@@ -316,6 +324,14 @@ if [ "$IS_ADMIN" = "true" ] && [ "$IS_ONLY_ADMIN" = "true" ]; then
   echo -e "  ${DIM}（你是唯一管理員，可以設定電腦名稱）${NC}"
   read -rp "  顯示名稱（Finder / Find My，可含空格，例如 Philip M4）: " COMPUTER_DISPLAY_NAME
   read -rp "  網路名稱（終端機 / ping，不可含空格，例如 philip-m4）: " COMPUTER_NETWORK_NAME
+  # LocalHostName 只接受字母/數字/連字號；把非法字元轉成連字號避免 HostName 與 LocalHostName 不一致
+  if [[ -n "$COMPUTER_NETWORK_NAME" ]]; then
+    SANITIZED_NETWORK_NAME=$(echo "$COMPUTER_NETWORK_NAME" | tr ' ' '-' | tr -cd 'A-Za-z0-9-')
+    if [[ "$SANITIZED_NETWORK_NAME" != "$COMPUTER_NETWORK_NAME" ]]; then
+      warn "網路名稱已正規化：$COMPUTER_NETWORK_NAME → $SANITIZED_NETWORK_NAME"
+      COMPUTER_NETWORK_NAME="$SANITIZED_NETWORK_NAME"
+    fi
+  fi
 else
   warn "非管理員或非唯一管理員，跳過電腦名稱設定"
 fi
@@ -416,6 +432,19 @@ menu_add "dev_homebrew_update" "Homebrew 每週自動更新（LaunchAgent）"
 
 menu_run "選擇要安裝的模組（全部預設勾選）"
 
+# ── 相依性：Starship / pyenv / nvm 的 shell 初始化只寫在 dev_ohmyzsh 的 .zshrc ──
+# 若選了這些工具卻沒選 Oh My Zsh，會裝好但在互動 shell 永遠不啟用。自動補上 dev_ohmyzsh。
+if ! menu_is_on "dev_ohmyzsh"; then
+  if menu_is_on "dev_starship" || menu_is_on "dev_python" || menu_is_on "dev_node"; then
+    for i in "${!MENU_KEYS[@]}"; do
+      if [[ "${MENU_KEYS[$i]}" == "dev_ohmyzsh" ]]; then
+        MENU_STATE[$i]=1
+      fi
+    done
+    warn "Starship/pyenv/nvm 需要 .zshrc 初始化，已自動勾選 Oh My Zsh"
+  fi
+fi
+
 
 # ════════════════════════════════════════════════════════════════════
 #  區塊 7：確認最終清單
@@ -453,7 +482,15 @@ fi
 # ── sudo 鎖定（確認後立即取得，並在背景保持存活）─────────────────────
 # 長腳本安裝期間 sudo 可能過期，用背景 loop 每 60 秒刷新 token
 sudo -v || fail "需要管理員密碼才能繼續"
-while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+# 背景子 shell 必須 set +e：否則 sudo token 過期時 `sudo -n true` 回傳非零，
+# 在繼承的 set -e 下會殺掉整個 keepalive（剛好就在它該補刷的時刻）。
+# 先檢查父進程存活再 sleep，讓父進程死亡後最多殘留一個閒置 sleep。
+( set +e
+  while true; do
+    kill -0 "$$" 2>/dev/null || exit 0
+    sudo -n true 2>/dev/null
+    sleep 60
+  done ) &
 SUDO_KEEPALIVE_PID=$!
 trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null' EXIT INT TERM
 
@@ -514,7 +551,9 @@ else
   info "安裝 Homebrew（可能需要幾分鐘）..."
   NONINTERACTIVE=1 /bin/bash -c \
     "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> "$HOME/.zprofile"
+  # 以內容判斷是否已寫入，避免部分失敗重跑時 .zprofile 累積重複行
+  grep -qF 'brew shellenv' "$HOME/.zprofile" 2>/dev/null \
+    || echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> "$HOME/.zprofile"
   eval "$(/opt/homebrew/bin/brew shellenv)"
   log "Homebrew 安裝完成"
 fi
@@ -527,11 +566,13 @@ fi
 section "系統設定"
 
 # ── 外觀模式 ──
+# 透過 System Events 需要自動化（Apple Events）權限；新帳號首次呼叫會跳授權對話框，
+# 被拒或非互動時會回傳非零。用 2>/dev/null || true 防止 set -e 中止（同桌布區塊作法）。
 if [ "$APPEARANCE" = "dark" ]; then
-  osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true'
+  osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' 2>/dev/null || true
   log "深色模式"
 else
-  osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false'
+  osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' 2>/dev/null || true
   log "淺色模式"
 fi
 
@@ -578,12 +619,16 @@ if menu_is_on "sys_dock"; then
 fi
 
 # ── 螢幕保護 + 睡眠密碼 ──
+# idleTime（螢幕保護啟動時間）仍可由 defaults 設定。
+# 但「睡眠後立即要求密碼」在 macOS 26 已不再由 askForPassword/askForPasswordDelay 控制
+# （這兩個 key 寫入會成功但無實際效果），須改由 sysadminctl 或系統設定處理。
 if menu_is_on "sys_screensaver"; then
   defaults write com.apple.screensaver idleTime -int 1200
   defaults -currentHost write com.apple.screensaver idleTime -int 1200
-  defaults write com.apple.screensaver askForPassword -int 1
-  defaults write com.apple.screensaver askForPasswordDelay -int 0
-  log "螢幕保護：20 分鐘 + 立即要求密碼"
+  # 「立即要求密碼」改走手動：sysadminctl -screenLock 需要使用者密碼，
+  # 在腳本中自動帶入既不安全也可能卡住終端機，故只設定螢幕保護時間
+  log "螢幕保護：20 分鐘（密碼鎖定需手動設定）"
+  add_manual "系統設定 → 鎖定畫面 → 「在開始螢幕保護程式或顯示器關閉後要求密碼」設為「立即」"
 fi
 
 # ── 熱角 ──
@@ -635,11 +680,16 @@ if menu_is_on "sys_menubar"; then
 
   if pmset -g batt 2>/dev/null | grep -q "InternalBattery"; then
     defaults write com.apple.controlcenter "NSStatusItem Visible Battery" -bool true
-    defaults write com.apple.menuextra.battery ShowPercent -bool true
+    # macOS 11+ 電池百分比由 Control Center 管理；舊的 com.apple.menuextra.battery
+    # ShowPercent 在 macOS 26 已無效（domain 不存在）
+    defaults -currentHost write com.apple.controlcenter BatteryShowPercentage -bool true
+    defaults write com.apple.controlcenter BatteryShowPercentage -bool true
     log "選單列：藍芽 + 音量 + 電池百分比"
   else
     log "選單列：藍芽 + 音量（無內建電池）"
   fi
+  # 這些狀態列項目由 ControlCenter 程序擁有，killall SystemUIServer 不會重載它們
+  killall ControlCenter 2>/dev/null || true
   killall SystemUIServer 2>/dev/null || true
 fi
 
@@ -689,6 +739,11 @@ if menu_is_on "sys_keyboard_remap"; then
 </plist>
 PLIST
 
+  # 先 bootout 舊的（若已載入），否則 bootstrap 在第二次執行會無效，
+  # launchd 會繼續跑舊定義，編輯過的 plist 不會生效
+  launchctl bootout "gui/$(id -u)/com.user.keyboard-remap" 2>/dev/null \
+    || launchctl unload "$LAUNCH_AGENT_DIR/com.user.keyboard-remap.plist" 2>/dev/null \
+    || true
   launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENT_DIR/com.user.keyboard-remap.plist" 2>/dev/null \
     || launchctl load "$LAUNCH_AGENT_DIR/com.user.keyboard-remap.plist" 2>/dev/null \
     || true
@@ -757,24 +812,31 @@ if menu_is_on "sys_filevault"; then
   FV_STATUS=$(fdesetup status 2>/dev/null || echo "unknown")
   if echo "$FV_STATUS" | grep -q "FileVault is On"; then
     log "FileVault 已開啟"
+    add_manual "確認 FileVault Recovery Key 已存入 1Password"
   else
     info "開啟 FileVault..."
-    sudo fdesetup enable -user "$(whoami)" || warn "FileVault 開啟失敗，請手動開啟"
-    echo
-    echo -e "${BOLD}${RED}  ══════════════════════════════════════════${NC}"
-    echo -e "${BOLD}${RED}  ⚠  FileVault Recovery Key 已顯示如上${NC}"
-    echo -e "${BOLD}${RED}  ⚠  請立即複製並存入 1Password！${NC}"
-    echo -e "${BOLD}${RED}  ══════════════════════════════════════════${NC}"
-    echo
-    read -rp "  已存入 1Password？[y/N] " FV_CONFIRM
-    if [[ ! "$FV_CONFIRM" =~ ^[Yy]$ ]]; then
-      warn "請務必在繼續前將 Recovery Key 存入 1Password，否則遺失後無法解鎖磁碟"
-      read -rp "  確認已存入，繼續？[y/N] " FV_CONFIRM2
-      [[ ! "$FV_CONFIRM2" =~ ^[Yy]$ ]] && fail "請先存入 Recovery Key 再繼續"
+    # 只有 enable 真正成功（且印出 Recovery Key）才顯示「請存入」橫幅與成功訊息；
+    # 失敗時不可謊稱已顯示金鑰、也不可謊稱已開啟。
+    if sudo fdesetup enable -user "$(whoami)"; then
+      echo
+      echo -e "${BOLD}${RED}  ══════════════════════════════════════════${NC}"
+      echo -e "${BOLD}${RED}  ⚠  FileVault Recovery Key 已顯示如上${NC}"
+      echo -e "${BOLD}${RED}  ⚠  請立即複製並存入 1Password！${NC}"
+      echo -e "${BOLD}${RED}  ══════════════════════════════════════════${NC}"
+      echo
+      read -rp "  已存入 1Password？[y/N] " FV_CONFIRM
+      if [[ ! "$FV_CONFIRM" =~ ^[Yy]$ ]]; then
+        warn "請務必在繼續前將 Recovery Key 存入 1Password，否則遺失後無法解鎖磁碟"
+        read -rp "  確認已存入，繼續？[y/N] " FV_CONFIRM2
+        [[ ! "$FV_CONFIRM2" =~ ^[Yy]$ ]] && fail "請先存入 Recovery Key 再繼續"
+      fi
+      log "FileVault 已開啟"
+      add_manual "確認 FileVault Recovery Key 已存入 1Password"
+    else
+      warn "FileVault 開啟失敗（未顯示 Recovery Key）"
+      add_manual "手動開啟 FileVault：系統設定 → 隱私權與安全性 → FileVault → 開啟"
     fi
-    log "FileVault 已開啟"
   fi
-  add_manual "確認 FileVault Recovery Key 已存入 1Password"
 fi
 
 
@@ -817,21 +879,31 @@ fi
 # ════════════════════════════════════════════════════════════════════
 
 if menu_is_on "sys_dock"; then
-  dock_reset
+  # 區塊 11 已用 defaults write 設定 Dock 外觀，cfprefsd 仍持有該 domain 的記憶體快取。
+  # 若直接用 plistlib 寫檔，cfprefsd 之後會用舊快取覆蓋掉我們寫入的 persistent-apps。
+  # 先重啟 cfprefsd 讓它放棄快取，之後改從磁碟重新讀取。
+  killall cfprefsd 2>/dev/null || true
 
-  add_dock_app "/System/Library/CoreServices/Finder.app"
-  add_dock_app "/Applications/Safari.app"
-  add_dock_app "/Applications/Google Chrome.app"
-  add_dock_app "/Applications/Brave Browser.app"
-  add_dock_app "/Applications/Spotify.app"
-  add_dock_app "/Applications/Ghostty.app"
-  add_dock_app "/Applications/Visual Studio Code.app"
-  add_dock_app "/Applications/Obsidian.app"
-  add_dock_app "/System/Applications/System Settings.app"
-  add_dock_app "/System/Applications/System Preferences.app"
-
-  killall Dock 2>/dev/null || true
-  log "Dock 圖示設定完成"
+  # System Preferences.app 在 Tahoe 已移除（改名 System Settings.app），故不再列入
+  if dock_reset; then
+    for app in \
+      "/System/Library/CoreServices/Finder.app" \
+      "/Applications/Safari.app" \
+      "/Applications/Google Chrome.app" \
+      "/Applications/Brave Browser.app" \
+      "/Applications/Spotify.app" \
+      "/Applications/Ghostty.app" \
+      "/Applications/Visual Studio Code.app" \
+      "/Applications/Obsidian.app" \
+      "/System/Applications/System Settings.app"
+    do
+      add_dock_app "$app" || warn "Dock 加入失敗：$(basename "$app")"
+    done
+    killall Dock 2>/dev/null || true
+    log "Dock 圖示設定完成"
+  else
+    warn "Dock 重設失敗，略過圖示排列"
+  fi
 fi
 
 
@@ -842,7 +914,8 @@ fi
 section "輸入法"
 
 if menu_is_on "app_rime"; then
-  brew_cask "squirrel"
+  # cask 已更名為 squirrel-app（舊名 squirrel 僅靠 old_tokens 別名暫時可用）
+  brew_cask "squirrel-app"
   RIME_DIR="$HOME/Library/Rime"
   mkdir -p "$RIME_DIR"
 
@@ -858,6 +931,8 @@ if menu_is_on "app_rime"; then
     fi
   fi
 
+  # 備份既有 default.custom.yaml（這是 Rime 使用者自訂檔，避免重跑時清掉使用者設定）
+  backup_if_exists "$RIME_DIR/default.custom.yaml"
   cat >"$RIME_DIR/default.custom.yaml" <<'RIME'
 patch:
   schema_list:
@@ -961,8 +1036,9 @@ if menu_is_on "dev_ohmyzsh"; then
   backup_if_exists "$HOME/.zshrc"
 
   # ── 動態決定 plugins 列表（1password plugin 需要 op CLI）──────────
-  # 因 heredoc 用 <<'ZSHRC'（防止展開），plugins 需分段寫入
-  cat >"$HOME/.zshrc" <<'ZSHRC_HEAD'
+  # 因 heredoc 用 <<'ZSHRC'（防止展開），plugins 需分段寫入。
+  # 寫入暫存檔再原子 mv，避免三段寫入中途中斷留下未閉合 plugins=( 的壞檔
+  cat >"$HOME/.zshrc.tmp" <<'ZSHRC_HEAD'
 # ════════════════════════════════════════════════
 #  .zshrc — 由 setup.sh 自動產生
 # ════════════════════════════════════════════════
@@ -985,11 +1061,11 @@ ZSHRC_HEAD
 
   # 1password plugin 只有安裝 1password-cli 才加入，避免 op 不存在時啟動報錯
   if menu_is_on "app_1password"; then
-    echo "  1password" >> "$HOME/.zshrc"
+    echo "  1password" >> "$HOME/.zshrc.tmp"
   fi
 
   # nvm 省略：.zshrc 下方已手動 source，加入 plugin 會雙重載入
-  cat >>"$HOME/.zshrc" <<'ZSHRC_PLUGINS'
+  cat >>"$HOME/.zshrc.tmp" <<'ZSHRC_PLUGINS'
   zsh-autosuggestions
   zsh-syntax-highlighting
   you-should-use
@@ -1057,6 +1133,8 @@ ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE="fg=#6c7a89"
 ZSH_AUTOSUGGEST_USE_ASYNC=1
 ZSHRC_PLUGINS
 
+  # 三段都成功才原子換上正式檔
+  mv -f "$HOME/.zshrc.tmp" "$HOME/.zshrc"
   log ".zshrc 完成"
 fi
 
@@ -1621,6 +1699,10 @@ if menu_is_on "dev_homebrew_update"; then
 </plist>
 PLIST
 
+  # 先 bootout 舊的（若已載入），確保第二次執行能套用編輯後的 plist
+  launchctl bootout "gui/$(id -u)/com.user.brew-update" 2>/dev/null \
+    || launchctl unload "$LAUNCH_AGENT_DIR/com.user.brew-update.plist" 2>/dev/null \
+    || true
   launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENT_DIR/com.user.brew-update.plist" 2>/dev/null \
     || launchctl load "$LAUNCH_AGENT_DIR/com.user.brew-update.plist" 2>/dev/null \
     || true
